@@ -4,7 +4,7 @@ layout: home
 hero:
   name: shorty
   text: Shorty
-  tagline: Self-hosted short links for Express + MongoDB: UTM builder, click analytics, React admin UI
+  tagline: "Self-hosted short links for Express + MongoDB: UTM builder, click analytics, React admin UI"
   actions:
     - theme: brand
       text: Quickstart
