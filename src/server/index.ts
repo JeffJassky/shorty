@@ -3,6 +3,11 @@ import type { Router } from 'express';
 import type { CreateShortyConfig, Link, ShortyInstance, UiOptions } from '../../types/index.js';
 import { resolveConfig } from './config.js';
 import { notImplemented } from './errors.js';
+import { createCounters, snapshotHealth } from './counters.js';
+import { createHooks } from './hooks.js';
+import { createLifecycle } from './lifecycle.js';
+import { createLinkService } from './links.js';
+import { createSlugService } from './slug.js';
 import { createUiRouter, defaultSpaDir } from './ui.js';
 
 export { defaultResolveUser } from './config.js';
@@ -22,11 +27,15 @@ export { defaultSpaDir };
  *   app.use('/api/shorty', requireAdmin, shorty.routes);
  *   app.use('/shorty', requireAdmin, shorty.ui());
  *
- * CONTRACT STAGE (PR 0): the shape is final; the bodies throw. See
- * plans/work-breakdown.md for which PR fills which stub.
+ * The shape is final; the bodies still marked `notImplemented` belong to later
+ * PRs — see plans/work-breakdown.md.
  */
 export function createShorty(config: CreateShortyConfig): ShortyInstance {
   const ctx = resolveConfig(config);
+  const counters = createCounters();           // PR 2 increments these from the click pipeline
+  const slugs = createSlugService(ctx);
+  const service = createLinkService(ctx, slugs, createHooks(ctx, counters));
+  const lifecycle = createLifecycle(ctx);
 
   const stubRouter = (): Router => {
     const r = express.Router();
@@ -39,28 +48,28 @@ export function createShorty(config: CreateShortyConfig): ShortyInstance {
     routes: stubRouter(),         // PR 4
     ui: (opts?: UiOptions) => createUiRouter(ctx, { ...ctx.ui, ...opts }),
 
-    ready: async () => notImplemented('ready'),
-    drain: async () => notImplemented('drain'),
-    health: () => notImplemented('health'),
+    ready: lifecycle.ready,
+    drain: async () => notImplemented('drain'),   // PR 2
+    health: () => snapshotHealth(counters, ctx.clicks.enabled),
 
-    createLink: async () => notImplemented('createLink'),
-    updateLink: async () => notImplemented('updateLink'),
-    archiveLink: async () => notImplemented('archiveLink'),
-    unarchiveLink: async () => notImplemented('unarchiveLink'),
-    deleteLink: async () => notImplemented('deleteLink'),
+    createLink: service.createLink,
+    updateLink: service.updateLink,
+    archiveLink: service.archiveLink,
+    unarchiveLink: service.unarchiveLink,
+    deleteLink: service.deleteLink,
 
-    link: async () => notImplemented('link'),
-    links: async () => notImplemented('links'),
-    history: async () => notImplemented('history'),
-    stats: async () => notImplemented('stats'),
-    paramValues: async () => notImplemented('paramValues'),
-    tags: async () => notImplemented('tags'),
-    checkSlug: async () => notImplemented('checkSlug'),
-    generateSlug: async () => notImplemented('generateSlug'),
-    inspect: async () => notImplemented('inspect'),
+    link: service.link,
+    links: service.links,
+    history: service.history,
+    stats: async () => notImplemented('stats'),   // PR 4
+    paramValues: async () => notImplemented('paramValues'),   // PR 4
+    tags: service.tags,
+    checkSlug: service.checkSlug,
+    generateSlug: service.generateSlug,
+    inspect: async () => notImplemented('inspect'),   // PR 3
     shortUrl: (linkOrSlug: Link | string) =>
       `${ctx.publicBaseUrl}/${typeof linkOrSlug === 'string' ? linkOrSlug : linkOrSlug.slug}`,
-    recount: async () => notImplemented('recount'),
+    recount: service.recount,
 
     models: ctx.models,
   };
