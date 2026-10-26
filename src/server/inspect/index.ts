@@ -100,17 +100,21 @@ export function createInspect(ctx: ResolvedContext): (url: string) => Promise<In
 
       if (final && ctx.screenshot && !ac.signal.aborted) {
         const shoot = ctx.screenshot;
-        const shot = await new Promise<Awaited<ReturnType<typeof shoot>>>((resolve) => {
-          const onAbort = (): void => resolve(null);
-          ac.signal.addEventListener('abort', onAbort, { once: true });
-          Promise.resolve()
-            .then(() => shoot(final.url))
-            .then(resolve, () => resolve(null))
-            .finally(() => ac.signal.removeEventListener('abort', onAbort));
-        });
-        if (shot && /^[a-z0-9.+-]+\/[a-z0-9.+-]+$/i.test(shot.contentType)) {
-          result.screenshot = `data:${shot.contentType};base64,${shot.body.toString('base64')}`;
-        }
+        try {
+          const shot = await new Promise<unknown>((resolve) => {
+            const onAbort = (): void => resolve(null);
+            ac.signal.addEventListener('abort', onAbort, { once: true });
+            Promise.resolve()
+              .then(() => shoot(final.url))
+              .then(resolve, () => resolve(null))
+              .finally(() => ac.signal.removeEventListener('abort', onAbort));
+          });
+          const o = shot as { contentType?: unknown; body?: unknown } | null;
+          if (o && typeof o === 'object' && typeof o.contentType === 'string' && /^image\/[a-z0-9.+-]+$/i.test(o.contentType) &&
+              (Buffer.isBuffer(o.body) || o.body instanceof Uint8Array)) {
+            result.screenshot = `data:${o.contentType};base64,${Buffer.from(o.body).toString('base64')}`;
+          }
+        } catch { /* any adapter misbehaviour: no screenshot */ }
       }
       return result;
     } finally {

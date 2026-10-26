@@ -81,6 +81,8 @@ export interface HeadInfo {
   og: OgData;
   /** `<meta name="robots">` carried `noindex` (or `none`). */
   noindex: boolean;
+  /** A real `</head>` or `<body>` tag (outside script/style/comment) was reached. */
+  ended: boolean;
 }
 
 const clean = (s: string | undefined): string | undefined => {
@@ -94,6 +96,7 @@ export function parseHead(html: string, baseUrl: string): HeadInfo {
   const links: Array<{ rel: string[]; href: string }> = [];
   let docTitle: string | undefined;
   let noindex = false;
+  let ended = false;
 
   let i = 0;
   scan: while ((i = html.indexOf('<', i)) !== -1) {
@@ -106,7 +109,7 @@ export function parseHead(html: string, baseUrl: string): HeadInfo {
     const next = html[i + 1];
     if (next === '/') {
       const m = /^<\/([a-zA-Z][a-zA-Z0-9]*)/.exec(html.slice(i, i + 32));
-      if (m && m[1].toLowerCase() === 'head') break;
+      if (m && m[1].toLowerCase() === 'head') { ended = true; break; }
       const j = html.indexOf('>', i);
       if (j === -1) break;
       i = j + 1;
@@ -127,6 +130,7 @@ export function parseHead(html: string, baseUrl: string): HeadInfo {
     i = tag.end;
     switch (tag.name) {
       case 'body':
+        ended = true;
         break scan;
       case 'title': {
         const close = findCI(html, '</title', tag.end);
@@ -186,7 +190,7 @@ export function parseHead(html: string, baseUrl: string): HeadInfo {
     return undefined;
   };
 
-  const favicon = linkHref((rel) => rel.includes('icon'));
+  const favicon = linkHref((rel) => rel.includes('icon'));   // exact token: 'icon' (so 'shortcut icon' too), never apple-touch-icon / mask-icon
   const og: OgData = {};
   const title = firstMeta('og:title', 'twitter:title') ?? docTitle;
   const description = firstMeta('description', 'og:description', 'twitter:description');
@@ -202,5 +206,5 @@ export function parseHead(html: string, baseUrl: string): HeadInfo {
   if (image !== undefined) og.image = image;
   if (siteName !== undefined) og.siteName = siteName;
   if (favicon !== undefined) og.favicon = favicon;
-  return { og, noindex };
+  return { og, noindex, ended };
 }

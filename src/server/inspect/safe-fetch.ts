@@ -2,6 +2,7 @@ import http from 'node:http';
 import https from 'node:https';
 import net from 'node:net';
 import type { ResolvedContext } from '../config.js';
+import { parseHead } from './og.js';
 
 /**
  * SSRF-safe fetch (Dub's model, research.md §7): per hop, resolve ONCE, check
@@ -65,6 +66,7 @@ function isPublicV6(g: number[]): boolean {
   if (zeros(8) || (zeros(7) && g[7] === 1)) return false;                       // :: and ::1
   if (zeros(5) && g[5] === 0xffff) return isPublicV4(v4(g[6], g[7]));            // ::ffff:a.b.c.d
   if (zeros(6)) return isPublicV4(v4(g[6], g[7]));                               // ::a.b.c.d (deprecated)
+  if (g[0] === 0x64 && g[1] === 0xff9b && g[2] === 1) return false;               // local-use NAT64 64:ff9b:1::/48
   if (g[0] === 0x64 && g[1] === 0xff9b && g.slice(2, 6).every((x) => x === 0)) { // NAT64 64:ff9b::/96
     return isPublicV4(v4(g[6], g[7]));
   }
@@ -185,7 +187,11 @@ function requestHop(url: URL, addresses: string[], cfg: InspectCtx, signal: Abor
         size += chunk.length;
         const window = (tail + chunk.toString('latin1')).toLowerCase();
         tail = window.slice(-8);
-        if (window.includes('</head') || window.includes('<body') || size >= cfg.maxBytes) finish();
+        if (size >= cfg.maxBytes) { finish(); return; }
+        // Cheap pre-filter, then ask the tokenizer: a `</head` inside a
+        // <script> or comment is not the end of the head.
+        if ((window.includes('</head') || window.includes('<body')) &&
+            parseHead(Buffer.concat(chunks).toString('latin1'), url.href).ended) finish();
       });
       response.on('end', () => finish());
     });
