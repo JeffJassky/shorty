@@ -1,0 +1,22 @@
+{
+  "// ": "The SPA is bundled by Vite, so imports resolve like a bundler's:",
+  "//  ": "extensionless, and `./App` finds App.tsx. The server half of this",
+  "//   ": "package runs on Node with NodeNext resolution, where the same import",
+  "//    ": "must carry an explicit `.js`. One tsconfig cannot be both, and the",
+  "//     ": "failure from forcing it is a Vite build that cannot find `./App.js`.",
+  "//      ": "Root tsconfig excludes this directory; `npm run typecheck` runs both.",
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "jsx": "react-jsx",
+    "types": ["node", "vite/client"]
+  },
+  "include": ["**/*.ts", "**/*.tsx", "../../types/**/*.d.ts"]
+}

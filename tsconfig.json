@@ -1,0 +1,34 @@
+{
+  "// ": "Typechecks the SERVER source, the tests, and the hand-written",
+  "//  ": "declarations together, so the two cannot drift: src/ imports its public",
+  "//   ": "types from types/, which means a shape added to the source without a",
+  "//    ": "matching declaration is a compile error. types/test-d.ts exercises the",
+  "//     ": "surface a host actually sees.",
+  "//      ": "noEmit is deliberate — tsup emits, tsc only judges.",
+  "//       ": "The SPA has its OWN tsconfig (src/ui/tsconfig.json) because Vite",
+  "//        ": "resolves imports like a bundler and Node does not. `npm run",
+  "//         ": "typecheck` runs both; running only this one leaves the UI unchecked.",
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ES2022", "DOM"],
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "verbatimModuleSyntax": true,
+    "types": ["node"]
+  },
+  "include": [
+    "src/server/**/*.ts",
+    "src/client/**/*.ts",
+    "test/**/*.ts",
+    "types/**/*.d.ts",
+    "types/test-d.ts",
+    "tsup.config.ts",
+    "vitest.config.ts"
+  ],
+  "exclude": ["dist", "node_modules", "src/ui"]
+}
