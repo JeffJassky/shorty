@@ -3,7 +3,8 @@ import type { Router } from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { UiOptions } from '../../types/index.js';
+import type { UiOptions, UiRuntimeConfig } from '../../types/index.js';
+import type { ResolvedContext } from './config.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -30,36 +31,31 @@ function escapeJson(value: unknown): string {
 }
 
 /**
- * Serve the built React SPA.
+ * Serve the built React SPA (§8).
  *
- *   app.use('/shorty', requireAuth, pkg.ui({ mountPath: '/shorty' }))
+ *   app.use('/shorty', requireAdmin, shorty.ui({ mountPath: '/shorty', apiBase: '/api/shorty' }))
  *
- * One build serves every mount path: assets are referenced relatively and the
- * server injects `<base href="<mountPath>/">` plus a runtime config blob, so
- * `apiBase` and admin mode are decided here rather than at build time.
- * Remounting needs no rebuild — but `mountPath` MUST match where the router is
- * actually mounted or every asset 404s. Behind a proxy that strips a prefix,
- * it is the path the *browser* sees, not the one Express sees.
- * See standards/traps.md #8.
- *
- * `loginUrl` is where the SPA sends someone whose session ends while the page
- * is open. The host's own guard handles signed-out-on-arrival; an *expiring*
- * session produces a 401 (or a 403, if their admin role was revoked) with the
- * page already rendered, and that case is ours. The current URL — hash route
- * included — is appended as `returnParam` so a login flow that honors it
- * returns the user to the exact view they were reading. Leave it null to
- * surface API errors inline instead.
+ * One build serves every mount path: assets are relative and the server injects
+ * `<base href="<mountPath>/">` plus the runtime config blob. `mountPath` MUST
+ * match where the router is mounted, as the browser sees it, or every asset
+ * 404s (traps #8).
  */
-export function createUiRouter({
-  mountPath = '/shorty',
-  apiBase = '/api/shorty',
-  adminApiBase = '/api/shorty/admin',
-  admin = false,
-  title = 'Shorty',
-  spaDir = defaultSpaDir(),
-  loginUrl = null,
-  returnParam = 'next',
-}: UiOptions = {}): Router {
+export function buildRuntimeConfig(ctx: ResolvedContext, opts: UiOptions): UiRuntimeConfig {
+  return {
+    apiBase: opts.apiBase ?? '/api/shorty',
+    title: opts.title ?? 'Links',
+    publicBaseUrl: ctx.publicBaseUrl,
+    loginUrl: opts.loginUrl ?? null,
+    returnParam: opts.returnParam ?? 'next',
+    slug: { length: ctx.slug.length, caseSensitive: ctx.slug.caseSensitive, rename: ctx.slug.rename },
+    redirect: { status: ctx.redirect.status, forwardQuery: ctx.redirect.forwardQuery },
+    clicksEnabled: ctx.clicks.enabled,
+    screenshot: Boolean(ctx.screenshot),
+  };
+}
+
+export function createUiRouter(ctx: ResolvedContext, opts: UiOptions = {}): Router {
+  const { mountPath = '/shorty', spaDir = defaultSpaDir() } = opts;
   const router = express.Router();
   const indexPath = path.join(spaDir, 'index.html');
 
@@ -71,21 +67,19 @@ export function createUiRouter({
   }));
 
   const base = `${mountPath.replace(/\/$/, '')}/`;
+  const config = escapeJson(buildRuntimeConfig(ctx, opts));
 
-  router.get(/.*/, (req, res) => {
+  router.get(/.*/, (_req, res) => {
     let html: string;
     try {
       html = fs.readFileSync(indexPath, 'utf8');
     } catch {
-      // The normal state of a fresh git checkout. A human explanation, not a
-      // stack trace — the reader is usually a host developer, not us.
+      // The normal state of a fresh checkout. A human explanation, not a stack.
       return res.status(503).type('text/plain').send(
         'shorty: UI bundle not found. Run `npm run build` in the package, '
         + 'or pass an explicit `spaDir`.',
       );
     }
-
-    const config = escapeJson({ apiBase, adminApiBase, admin, title, loginUrl, returnParam });
     const injected = html.replace(
       '<!--shorty-config-->',
       `<base href="${base}" />\n    <script>window.__SHORTY__=${config}</script>`,
@@ -94,34 +88,4 @@ export function createUiRouter({
   });
 
   return router;
-}
-
-/**
- * User-facing UI. Mount behind ordinary user auth.
- */
-export function createPublicUiRouter(opts: UiOptions = {}): Router {
-  return createUiRouter({
-    mountPath: '/shorty',
-    title: 'Shorty',
-    ...opts,
-    admin: false,
-  });
-}
-
-/**
- * Admin UI — a separate bundle instance at a separate mount, behind the host's
- * admin guard. It is NOT the same page with a flag flipped client-side: a
- * non-admin who guesses the URL is stopped by the host's middleware before any
- * HTML is served.
- *
- *   app.use('/admin/shorty', requireAuth, requireAdmin,
- *           pkg.adminUi({ mountPath: '/admin/shorty' }))
- */
-export function createAdminUiRouter(opts: UiOptions = {}): Router {
-  return createUiRouter({
-    mountPath: '/admin/shorty',
-    title: 'Shorty — admin',
-    ...opts,
-    admin: true,
-  });
 }

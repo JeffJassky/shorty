@@ -35,6 +35,8 @@ const shorty = createShorty({
   onClick: (e) => analytics.capture(e),   // optional hooks, see §3
 })
 
+await shorty.ready()                    // indexes, TTL reconcile, case-mode re-key
+
 app.use('/go', shorty.redirect)                     // public — or '/', or a vhost; any order
 app.use('/admin/links/api', requireAdmin, shorty.routes)
 app.use('/admin/links', requireAdmin, shorty.ui())  // SPA; talks to `routes`
@@ -51,6 +53,8 @@ await shorty.stats({ linkId?, from, to, interval })
 await shorty.paramValues()        // the suggestion catalog, §7.4
 await shorty.inspect(url)         // OG + destination health, §7.6
 shorty.shortUrl(link)             // publicBaseUrl + slug
+await shorty.drain()              // in-flight click pipelines (shutdown, tests)
+shorty.health()                   // { clickFailures, hookFailures, misses, inFlight, clicksEnabled }
 ```
 
 Exports: `createShorty` (default too), `createShortyClient` from
@@ -215,10 +219,13 @@ Indexes: `{ keys: 1 }`; `{ archived: 1, createdAt: -1 }`;
 link's alias under a race): `{ _id: slugKey, linkId, current: boolean, at }`.
 Claiming a slug is an insert; duplicate-key = taken. Deleting a link frees its keys.
 
-**`shorty_link_revisions`** — one doc per destination change (Bitly's history):
-`{ linkId, rev, baseUrl, utm, params, hash, destination, by?, at }`.
-Index `{ linkId: 1, rev: -1 }` unique. Clicks carry `rev`, so "clicks per
-destination period" is a group-by, not a reconstruction.
+**`shorty_history`** — one doc per created / destination change / slug rename
+(Bitly's history): `HistoryEntry` + `linkId`. Index `{ linkId: 1, at: 1 }`.
+Clicks carry `rev`, so "clicks per destination period" is a group-by, not a
+reconstruction.
+
+**`shorty_meta`** — singleton `{ _id: 'config', caseSensitive }`, so `ready()`
+knows which case mode the stored keys were written under and can re-key.
 
 **`shorty_clicks`** — raw, TTL'd (traps #17: regular collection, not time-series):
 `{ linkId, rev, at, visitor: string /* HMAC */, unique: boolean, bot: boolean,
@@ -265,7 +272,7 @@ the point):
 
 ```
 $project { pairs: concat(utm entries as utm_*, params) }
-$unwind pairs → $group by (key, value): count, lastUsedAt
+$unwind pairs → $group by (key, value): DISTINCT links (a link repeating a key counts once), lastUsedAt
 $sort count desc → $group by key: values (first 50), totalCount
 ```
 `maxTimeMS: 2000`, values capped per key (traps #18). Response:
@@ -395,7 +402,7 @@ totals, top links, top campaigns (from utm), recent misses.
 | Trap | Answer |
 |---|---|
 | #2 model registry | `modelPrefix`; models compiled on the given connection |
-| #4 route order | admin literals (`/links/stats`, `/slugs/check`, `/params`, `/tags`, `/inspect`) declared before `/:id`; tests named after the shadowing |
+| #4 route order | admin literals (`/stats`, `/slugs/check`, `/slugs/generate`, `/params`, `/tags`, `/inspect`) declared before `/:id`; tests named after the shadowing |
 | #5 body parser | host's `express.json()`; documented |
 | #6 async → HTML | every handler wrapped; redirect router never throws past `next(err)` only for genuine DB outage |
 | #8 SPA mount | `<base href>` + escaped config blob; 503 when bundle missing |
@@ -458,6 +465,9 @@ totals, top links, top campaigns (from utm), recent misses.
 No open questions remain in the plan.
 
 ## 14. Work breakdown (Stage 4 preview)
+
+Superseded in detail by [work-breakdown.md](./work-breakdown.md) (PR 0). The
+typed client moved into PR 0.
 
 | PR | Who | Contents | Done when |
 |---|---|---|---|

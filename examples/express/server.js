@@ -1,36 +1,40 @@
 /**
- * Runnable example — an in-memory Mongo, a fake auth middleware, and every
- * shorty mount.
+ * Runnable example — in-memory Mongo, a fake auth middleware, every shorty mount.
  *
  *   npm run build && node examples/express/server.js
  *
- * Then open http://localhost:3000/shorty or http://localhost:3000/admin/shorty.
- * Switch identity with `?as=` — `?as=alice`, `?as=bob`, `?as=admin`.
+ * Admin UI:   http://127.0.0.1:3000/admin/links        (?as=staff to sign in as staff)
+ * Short links: http://127.0.0.1:3000/go/<slug>
+ *
+ * Try remounting `redirect` at '/' — it falls through to the host's own routes
+ * for anything that isn't a known slug, whatever order they're registered in.
  */
 import express from 'express';
 import mongoose from 'mongoose';
 import { MongoMemoryServer } from 'mongodb-memory-server';
-// The BUILT artifact, not `src/` — the source is TypeScript now, and this
-// example runs under plain `node`. Importing dist also means the example
-// exercises what a host actually installs. Run `npm run build` first.
+// The BUILT artifact, not `src/` — this runs under plain node and exercises
+// what a host actually installs. Run `npm run build` first.
 import { createShorty } from '../../dist/index.js';
 
 const mongod = await MongoMemoryServer.create();
 await mongoose.connect(mongod.getUri(), { dbName: 'shorty-example' });
 
-// Stand-ins for real accounts. A real host reads these from a session.
+const port = Number(process.env.PORT) || 3000;
+
 const PEOPLE = {
-  alice: { id: new mongoose.Types.ObjectId(), email: 'alice@example.com', displayName: 'Alice', isAdmin: false },
-  bob: { id: new mongoose.Types.ObjectId(), email: 'bob@example.com', displayName: 'Bob', isAdmin: false },
-  admin: { id: new mongoose.Types.ObjectId(), email: 'staff@example.com', displayName: 'Staff', isAdmin: true },
+  visitor: null,
+  staff: { id: 'staff-1', name: 'Staff Person', isAdmin: true },
 };
 
-const pkg = createShorty({
+const shorty = createShorty({
   connection: mongoose,
-  resolveUser: (req) => req.person,
+  publicBaseUrl: `http://127.0.0.1:${port}/go`,
+  pepper: 'example-pepper-change-me',
+  resolveUser: (req) => (req.person ? { id: req.person.id, name: req.person.name } : null),
+  onClick: ({ link, click }) => console.log(`click ${link.slug}${click.bot ? ' (bot)' : ''}`),
   logger: console,
 });
-await pkg.model.createIndexes();
+await shorty.ready();
 
 const app = express();
 
@@ -40,44 +44,32 @@ app.use(express.json());
 // Fake auth. The identity sticks in a cookie so the SPA's fetches keep it.
 app.use((req, res, next) => {
   const who = req.query.as;
-  if (who && PEOPLE[who]) res.cookie('as', who);
-  const key = who && PEOPLE[who] ? who : (req.headers.cookie?.match(/as=(\w+)/)?.[1] ?? 'alice');
-  req.person = PEOPLE[key] ?? PEOPLE.alice;
+  if (who && who in PEOPLE) res.cookie('as', who);
+  const key = who && who in PEOPLE ? who : (req.headers.cookie?.match(/as=(\w+)/)?.[1] ?? 'staff');
+  req.person = PEOPLE[key] ?? null;
   next();
 });
 
 /**
- * THE GUARD THE PACKAGE CANNOT WRITE.
- *
- * `isAdmin` from the adapter drives badges and which UI renders — it gates
- * nothing, because shorty cannot know what admin means here. This middleware
- * is the only thing standing between a curious user and the admin API.
- *
- * Copy it, and copy the test in examples/admin-guard.test.js with it. That test
- * is the net, and it has to live in YOUR repo.
+ * THE GUARD THE PACKAGE CANNOT WRITE. Shorty never decides who may manage
+ * links — this middleware is the whole boundary. Copy it, and copy
+ * examples/admin-guard.test.js with it.
  */
-const requireAdmin = (req, res, next) => (
+const requireStaff = (req, res, next) => (
   req.person?.isAdmin ? next() : res.status(403).json({ error: 'forbidden' })
 );
 
-// Public: JSON API + UI.
-app.use('/api/shorty', pkg.routes);
-app.use('/shorty', pkg.ui({ mountPath: '/shorty', loginUrl: '/login', returnParam: 'next' }));
+app.use('/admin/links/api', requireStaff, shorty.routes);
+app.use('/admin/links', requireStaff, shorty.ui({ mountPath: '/admin/links', apiBase: '/admin/links/api' }));
+app.use('/go', shorty.redirect);
 
-// Admin: JSON API + UI, both behind the guard, at their own paths.
-app.use('/api/shorty/admin', requireAdmin, pkg.adminRoutes);
-app.use('/admin/shorty', requireAdmin, pkg.adminUi({ mountPath: '/admin/shorty' }));
+app.get('/', (_req, res) => res.redirect('/admin/links'));
 
-app.get('/', (_req, res) => res.redirect('/shorty'));
-
-// Honor PORT. A dev box usually has something on 3000 already, and on macOS a
-// process bound to IPv6 `*:3000` does NOT stop node binding IPv4 0.0.0.0:3000 —
-// so this listens "successfully" and every request goes to the other app.
-// The symptom is a 404 on every route with no error anywhere.
-const port = Number(process.env.PORT) || 3000;
+// Honor PORT. On macOS a process bound to IPv6 `*:3000` does NOT stop node
+// binding IPv4 — this would "listen" and every request would go elsewhere.
 const server = app.listen(port, '127.0.0.1', () => {
-  console.log(`shorty example → http://127.0.0.1:${port}/shorty`);
-  console.log(`                   http://127.0.0.1:${port}/admin/shorty?as=admin`);
+  console.log(`shorty example → http://127.0.0.1:${port}/admin/links`);
+  console.log(`                 http://127.0.0.1:${port}/go/<slug>`);
 });
 server.on('error', (err) => {
   if (err.code === 'EADDRINUSE') {
