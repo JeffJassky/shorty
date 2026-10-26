@@ -1,7 +1,10 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import request from 'supertest';
 import { Types } from 'mongoose';
-import { composeUrl, createShorty, ShortyError } from '../src/server/index.js';
+import type { Request } from 'express';
+import {
+  composeUrl, createShorty, defaultResolveUser, ERROR_STATUS, ShortyError,
+} from '../src/server/index.js';
 import type {
   Actor,
   CreateShortyConfig,
@@ -10,7 +13,7 @@ import type {
   ShortyErrorCode,
   ShortyInstance,
 } from '../types/index.js';
-import { BOT_UA, HUMAN_UA, MINUTE, harness, startDb, stopDb } from './helpers.js';
+import { BOT_UA, HOUR, HUMAN_UA, MINUTE, harness, startDb, stopDb } from './helpers.js';
 import type { Harness } from './helpers.js';
 
 /**
@@ -913,5 +916,456 @@ describe('lifecycle hooks and track', () => {
     const h = await harness({ config: { track: () => { throw new Error('telemetry down'); } } });
     await expect(create(h, { slug: 'spring' })).resolves.toBeTruthy();
     expect((await h.shorty.link('spring'))).not.toBeNull();
+    expect(h.shorty.health().hookFailures).toBe(1);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Audit follow-ups
+// ─────────────────────────────────────────────────────────────────────────────
+
+function siblingOf(h: Harness, caseSensitive: boolean): ShortyInstance {
+  return createShorty({ ...h.config, ...h.prefixes, slug: { ...h.config.slug, caseSensitive } });
+}
+
+async function settle<T>(ps: Array<Promise<T>>): Promise<{ ok: T[]; codes: string[] }> {
+  const results = await Promise.allSettled(ps);
+  const ok: T[] = [];
+  const codes: string[] = [];
+  for (const r of results) {
+    if (r.status === 'fulfilled') ok.push(r.value);
+    else codes.push(r.reason instanceof ShortyError ? r.reason.code : `non-ShortyError: ${String(r.reason)}`);
+  }
+  return { ok, codes };
+}
+
+describe('slugs — generator config', () => {
+  it('does not emit 0, 1, i, l or o from the default alphabet', async () => {
+    const h = await harness();
+    const chars = new Set<string>();
+    for (let i = 0; i < 300; i += 1) {
+      const slug = await h.shorty.generateSlug();
+      expect(slug).toHaveLength(7);
+      for (const c of slug) chars.add(c);
+    }
+    for (const banned of ['0', '1', 'i', 'l', 'o']) expect(chars.has(banned), banned).toBe(false);
+    for (const c of chars) expect('23456789abcdefghjkmnpqrstuvwxyz').toContain(c);
+  });
+
+  it('does not ignore a configured length and alphabet', async () => {
+    const h = await harness({ config: { slug: { length: 12, alphabet: 'ab' } } });
+    expect((await create(h)).slug).toMatch(/^[ab]{12}$/);
+    expect(await h.shorty.generateSlug()).toMatch(/^[ab]{12}$/);
+  });
+
+  it('does not accept invalid or reserved generator output — it retries', async () => {
+    const queue = ['a b', '_x', 'good1'];
+    const h = await harness({ config: { slug: { generate: () => queue.shift() ?? 'zzfallback' } } });
+    const link = await create(h);
+    expect(link.slug).toBe('good1');
+  });
+
+  it.each(['a b', '_x', 'x'.repeat(191)])('does not loop forever when the generator always returns %j', async (bad) => {
+    const h = await harness({ config: { slug: { generate: () => bad } } });
+    await rejects(create(h), 'slug_generation_exhausted');
+  });
+});
+
+describe('slugs — grammar edges', () => {
+  it.each(['', '/'])('does not treat custom slug %j as "generate one"', async (slug) => {
+    const h = await harness();
+    await rejects(create(h, { slug }), 'slug_invalid');
+    expect((await h.shorty.links({ archived: 'all' })).items).toHaveLength(0);
+  });
+
+  it('does not report the empty slug as anything but invalid', async () => {
+    const h = await harness();
+    expect(await h.shorty.checkSlug('')).toMatchObject({ available: false, reason: 'invalid' });
+  });
+
+  it('does not reject underscores mid-slug, digits, or slashes it can trim', async () => {
+    const h = await harness();
+    expect((await create(h, { slug: 'a_b' })).slug).toBe('a_b');
+    expect((await create(h, { slug: '2026' })).slug).toBe('2026');
+    expect((await create(h, { slug: '//a//' })).slug).toBe('a');
+  });
+});
+
+describe('slugs — races and released claims', () => {
+  it('does not let two concurrent creates claim one slug', async () => {
+    const h = await harness();
+    const { ok, codes } = await settle(Array.from({ length: 10 }, () => create(h, { slug: 'race' })));
+    expect(ok).toHaveLength(1);
+    expect(codes).toEqual(Array(9).fill('slug_taken'));
+    expect(await h.shorty.models.Link.countDocuments({})).toBe(1);
+    expect((await h.shorty.link('race'))?.id).toBe(ok[0].id);
+  });
+
+  it('does not let two concurrent renames claim one slug', async () => {
+    const h = await harness();
+    const a = await create(h, { slug: 'a1' });
+    const b = await create(h, { slug: 'b1' });
+    const { ok, codes } = await settle([
+      h.shorty.updateLink(a.id, { slug: 'prize' }),
+      h.shorty.updateLink(b.id, { slug: 'prize' }),
+    ]);
+    expect(ok).toHaveLength(1);
+    expect(codes).toEqual(['slug_taken']);
+    const winner = ok[0];
+    const loser = winner.id === a.id ? b : a;
+    expect((await h.shorty.link('prize'))?.id).toBe(winner.id);
+    expect((await h.shorty.link(loser.id))?.slug).toBe(loser.slug);
+  });
+
+  it('does not keep a slug claimed by a create that failed', async () => {
+    const h = await harness({ config: { destinations: { blockedHosts: ['evil.com'] } } });
+    await rejects(create(h, { slug: 'x', url: 'https://evil.com/' }), 'host_blocked');
+    expect((await h.shorty.checkSlug('x')).available).toBe(true);
+    await expect(create(h, { slug: 'x' })).resolves.toBeTruthy();
+  });
+
+  it('does not half-apply a patch that fails (rename + blocked host)', async () => {
+    const h = await harness({ config: { destinations: { blockedHosts: ['evil.com'] } } });
+    const link = await create(h, { slug: 'spring' });
+    await rejects(h.shorty.updateLink(link.id, { slug: 'summer', baseUrl: 'https://evil.com/' }), 'host_blocked');
+    const after = await h.shorty.link(link.id);
+    expect(after?.slug).toBe('spring');
+    expect(after?.destination).toBe(link.destination);
+    expect(after?.aliases).toEqual([]);
+    expect(await h.shorty.link('summer')).toBeNull();
+    expect(await h.shorty.history(link.id)).toHaveLength(1);
+    await expect(create(h, { slug: 'summer' })).resolves.toBeTruthy();
+  });
+});
+
+describe('createLink — validation edges', () => {
+  it.each([
+    'http://short.test/go',
+    'http://short.test/go/',
+    'http://short.test/go?x=1',
+    'http://short.test/go/a/b',
+  ])('does not let a link loop to %s', async (url) => {
+    const h = await harness();
+    await rejects(h.shorty.createLink({ url }), 'destination_loop');
+  });
+
+  it('does not let an update create a loop', async () => {
+    const h = await harness();
+    const link = await create(h);
+    await rejects(h.shorty.updateLink(link.id, { url: 'http://short.test/go/x' }), 'destination_loop');
+    await rejects(h.shorty.updateLink(link.id, { baseUrl: 'http://short.test/go' }), 'destination_loop');
+  });
+
+  it('does not mistake a sibling path on the same host for a loop', async () => {
+    const h = await harness();
+    await expect(h.shorty.createLink({ url: 'http://short.test/gone' })).resolves.toBeTruthy();
+    await expect(h.shorty.createLink({ url: 'http://short.test/' })).resolves.toBeTruthy();
+  });
+
+  it('does not accept a social card over the character limits (120 / 240)', async () => {
+    const h = await harness();
+    await rejects(create(h, { social: { title: 't'.repeat(121) } }), 'validation');
+    await rejects(create(h, { social: { description: 'd'.repeat(241) } }), 'validation');
+    await expect(create(h, { social: { title: 't'.repeat(120), description: 'd'.repeat(240) } })).resolves.toBeTruthy();
+  });
+});
+
+describe('og', () => {
+  it('does not store og without fetchedAt from config.now, or keep it after og: null', async () => {
+    const h = await harness();
+    const link = await create(h, { og: { title: 'Sale', image: 'https://acme.com/card.png', favicon: 'https://acme.com/f.ico' } });
+    expect(link.og).toEqual({
+      title: 'Sale', image: 'https://acme.com/card.png', favicon: 'https://acme.com/f.ico', fetchedAt: h.clock.now,
+    });
+
+    h.clock.advance(HOUR);
+    const refreshed = await h.shorty.updateLink(link.id, { og: { title: 'Sale 2' } });
+    expect(refreshed.og).toEqual({ title: 'Sale 2', fetchedAt: h.clock.now });
+    expect(refreshed.rev).toBe(1);
+
+    const cleared = await h.shorty.updateLink(link.id, { og: null });
+    expect(cleared.og).toBeUndefined();
+  });
+});
+
+describe('updateLink — edges', () => {
+  it('does not drop utm, params or hash when only baseUrl is patched', async () => {
+    const h = await harness();
+    const link = await create(h, { url: 'https://acme.com/a?utm_source=ig&x=1#h' });
+    const next = await h.shorty.updateLink(link.id, { baseUrl: 'https://acme.com/b' });
+    expect(next.utm).toEqual({ source: 'ig' });
+    expect(next.params).toEqual([{ key: 'x', value: '1' }]);
+    expect(next.hash).toBe('h');
+    expect(next.destination).toBe('https://acme.com/b?utm_source=ig&x=1#h');
+  });
+
+  it('does not stamp updatedAt from the wall clock, or move createdAt', async () => {
+    const h = await harness();
+    const link = await create(h);
+    h.clock.advance(HOUR);
+    const next = await h.shorty.updateLink(link.id, { title: 'later' });
+    expect(next.updatedAt.toISOString()).toBe(h.clock.now.toISOString());
+    expect(next.createdAt.toISOString()).toBe(link.createdAt.toISOString());
+  });
+
+  it.each([
+    ['a b', 'slug_invalid'],
+    ['_x', 'slug_reserved'],
+    ['r'.repeat(191), 'slug_too_long'],
+  ] as const)('does not apply a rename to %j (%s) or record it', async (slug, code) => {
+    const h = await harness();
+    const link = await create(h, { slug: 'spring' });
+    await rejects(h.shorty.updateLink(link.id, { slug }), code);
+    const after = await h.shorty.link(link.id);
+    expect(after?.slug).toBe('spring');
+    expect(after?.aliases).toEqual([]);
+    expect(await h.shorty.history(link.id)).toHaveLength(1);
+  });
+
+  it.each(['archiveLink', 'unarchiveLink', 'history', 'recount'] as const)(
+    'does not answer %s on an unknown id with anything but not_found',
+    async (method) => {
+      const h = await harness();
+      await rejects(h.shorty[method](new Types.ObjectId().toHexString()), 'not_found');
+    },
+  );
+});
+
+describe('same-key slug in a patch is not a rename', () => {
+  it('does not lock under untilClicked after a click when the same key is re-sent', async () => {
+    const h = await harness({ config: { slug: { rename: 'untilClicked' } } });
+    const link = await create(h, { slug: 'Spring' });
+    await humanClick(h, 'Spring');
+    expect((await h.shorty.link(link.id))?.clicks).toBe(1);
+    const next = await h.shorty.updateLink(link.id, { slug: 'spring', title: 'ok' });
+    expect(next.title).toBe('ok');
+    expect(await h.shorty.history(link.id)).toHaveLength(1);
+  });
+
+  it('does not add an alias or a history entry in alias mode', async () => {
+    const h = await harness();
+    const link = await create(h, { slug: 'Spring' });
+    const next = await h.shorty.updateLink(link.id, { slug: 'SPRING' });
+    expect(next.aliases).toEqual([]);
+    expect(await h.shorty.history(link.id)).toHaveLength(1);
+  });
+});
+
+describe('history — rename mode and combined patches', () => {
+  it.each(['always', 'untilClicked'] as const)('does not record the wrong mode on a slug entry (%s)', async (rename) => {
+    const h = await harness({ config: { slug: { rename } } });
+    const link = await create(h, { slug: 'spring' });
+    await h.shorty.updateLink(link.id, { slug: 'summer' });
+    const last = (await h.shorty.history(link.id)).at(-1);
+    expect(last).toMatchObject({ kind: 'slug', from: 'spring', to: 'summer', mode: rename });
+  });
+
+  it('does not collapse a destination + slug patch into one entry', async () => {
+    const onUpdate = vi.fn<NonNullable<CreateShortyConfig['onUpdate']>>();
+    const h = await harness({ config: { onUpdate } });
+    const link = await create(h, { slug: 'spring', url: 'https://acme.com/?utm_source=ig' });
+    await h.shorty.updateLink(link.id, { slug: 'summer', utm: { source: 'fb' } });
+    const entries = await h.shorty.history(link.id);
+    expect(entries.map((e) => e.kind).sort()).toEqual(['created', 'destination', 'slug']);
+    expect(onUpdate.mock.calls[0][0].history.map((e) => e.kind).sort()).toEqual(['destination', 'slug']);
+  });
+});
+
+describe('case mode flips — edges', () => {
+  it('does not leave aliases on the old keys after a flip', async () => {
+    const h = await harness();
+    const link = await create(h, { slug: 'Spring' });
+    await h.shorty.updateLink(link.id, { slug: 'Summer' });
+    const s2 = siblingOf(h, true);
+    await s2.ready();
+    expect((await s2.link('Spring'))?.id).toBe(link.id);
+    expect((await s2.link('Summer'))?.id).toBe(link.id);
+    expect(await s2.link('spring')).toBeNull();
+  });
+
+  it('does not keep mixed-case keys after switching to case-insensitive', async () => {
+    const h = await harness({ config: { slug: { caseSensitive: true } } });
+    const link = await create(h, { slug: 'Spring' });
+    const s2 = siblingOf(h, false);
+    await s2.ready();
+    expect((await s2.link('spring'))?.id).toBe(link.id);
+    expect((await s2.link('SPRING'))?.id).toBe(link.id);
+    expect((await s2.models.Link.findById(link.id).lean())?.slugKey).toBe('spring');
+  });
+
+  it('does not miss a collision between one link\'s slug and another\'s alias — and changes nothing', async () => {
+    const h = await harness({ config: { slug: { caseSensitive: true } } });
+    const first = await create(h, { slug: 'Ab' });
+    await h.shorty.updateLink(first.id, { slug: 'Cd' });   // 'Ab' is now an alias
+    await create(h, { slug: 'ab' });
+
+    const { Link: LinkModel, Meta, Slug } = h.shorty.models;
+    const snapshot = async () => ({
+      links: (await LinkModel.find({}, { slugKey: 1, keys: 1 }).sort({ _id: 1 }).lean())
+        .map((d) => ({ id: String(d._id), slugKey: d.slugKey, keys: [...d.keys].sort() })),
+      slugs: (await Slug.find({}).sort({ _id: 1 }).lean()).map((d) => ({ id: d._id, linkId: String(d.linkId), current: d.current })),
+      meta: await Meta.find({}).lean(),
+    });
+    const before = await snapshot();
+
+    const s2 = siblingOf(h, false);
+    const err = await rejects(s2.ready(), 'case_collision');
+    const said = `${err.message} ${JSON.stringify(err.details ?? {})}`;
+    expect(said).toContain('Ab');
+    expect(said).toContain('ab');
+
+    expect(await snapshot()).toEqual(before);
+    // The original instance still resolves everything.
+    expect((await h.shorty.link('Ab'))?.id).toBe(first.id);
+  });
+});
+
+describe('links() — more sorts, search and paging', () => {
+  async function seed(h: Harness, count: number, input: (i: number) => Partial<LinkInput> = () => ({})): Promise<Link[]> {
+    const out: Link[] = [];
+    for (let i = 0; i < count; i += 1) {
+      out.push(await create(h, { url: `https://example.com/p${i}`, ...input(i) }));
+      h.clock.advance(MINUTE);
+    }
+    return out;
+  }
+
+  async function allPages(h: Harness, query: Parameters<ShortyInstance['links']>[0]): Promise<{ ids: string[]; pages: number }> {
+    const ids: string[] = [];
+    let cursor: string | undefined;
+    let pages = 0;
+    do {
+      const page = await h.shorty.links({ ...query, ...(cursor ? { cursor } : {}) });
+      ids.push(...page.items.map((l) => l.id));
+      cursor = page.nextCursor ?? undefined;
+      pages += 1;
+    } while (cursor && pages < 20);
+    return { ids, pages };
+  }
+
+  it('does not put never-clicked links ahead of clicked ones under sort: lastClicked', async () => {
+    const h = await harness();
+    const [never, old, mid, recent] = await seed(h, 4);
+    const at = (iso: string) => new Date(iso);
+    await h.shorty.models.Link.updateOne({ _id: old.id }, { $set: { lastClickedAt: at('2026-03-01T00:00:00Z') } });
+    await h.shorty.models.Link.updateOne({ _id: mid.id }, { $set: { lastClickedAt: at('2026-03-05T00:00:00Z') } });
+    await h.shorty.models.Link.updateOne({ _id: recent.id }, { $set: { lastClickedAt: at('2026-03-10T00:00:00Z') } });
+    const expected = [recent.id, mid.id, old.id, never.id];
+    expect((await h.shorty.links({ sort: 'lastClicked' })).items.map((l) => l.id)).toEqual(expected);
+    const { ids } = await allPages(h, { sort: 'lastClicked', limit: 1 });
+    expect(ids).toEqual(expected);
+  });
+
+  it('does not leave slug or baseUrl out of text search', async () => {
+    const h = await harness();
+    const bySlug = await create(h, { slug: 'zucchini-promo', url: 'https://example.com/a' });
+    const byBase = await create(h, { url: 'https://example.com/aubergine' });
+    expect((await h.shorty.links({ q: 'zucchini' })).items.map((l) => l.id)).toEqual([bySlug.id]);
+    expect((await h.shorty.links({ q: 'aubergine' })).items.map((l) => l.id)).toEqual([byBase.id]);
+  });
+
+  it('does not throw on regex metacharacters, or treat them as a pattern', async () => {
+    const h = await harness();
+    await seed(h, 3);
+    await expect(h.shorty.links({ q: '(' })).resolves.toBeTruthy();
+    expect((await h.shorty.links({ q: '.*' })).items).toEqual([]);
+  });
+
+  it('does not report the cap instead of a smaller requested limit', async () => {
+    const h = await harness();
+    await seed(h, 4);
+    const page = await h.shorty.links({ limit: 3 });
+    expect(page.limit).toBe(3);
+    expect(page.items).toHaveLength(3);
+  });
+
+  it('does not hand out a cursor to an empty page when the count is an exact multiple', async () => {
+    const h = await harness();
+    await seed(h, 6);
+    const first = await h.shorty.links({ limit: 3 });
+    expect(first.nextCursor).not.toBeNull();
+    const second = await h.shorty.links({ limit: 3, cursor: first.nextCursor ?? undefined });
+    expect(second.items).toHaveLength(3);
+    expect(second.nextCursor).toBeNull();
+  });
+
+  it('does not lose the tag or archived filter across cursor pages', async () => {
+    const h = await harness();
+    const made = await seed(h, 8, (i) => ({ tags: i % 2 === 0 ? ['x'] : [] }));
+    const tagged = made.filter((_, i) => i % 2 === 0).map((l) => l.id).sort();
+    expect((await allPages(h, { tag: 'x', limit: 2 })).ids.sort()).toEqual(tagged);
+
+    const archived = made.slice(0, 5);
+    for (const l of archived) await h.shorty.archiveLink(l.id);
+    expect((await allPages(h, { archived: true, limit: 2 })).ids.sort()).toEqual(archived.map((l) => l.id).sort());
+    expect((await allPages(h, { archived: false, limit: 2 })).ids.sort()).toEqual(made.slice(5).map((l) => l.id).sort());
+  });
+});
+
+describe('shortUrl()', () => {
+  it('does not build a different URL from a Link object than from its slug', async () => {
+    const h = await harness();
+    const link = await create(h, { slug: 'spring/ig' });
+    expect(h.shorty.shortUrl(link)).toBe('http://short.test/go/spring/ig');
+    expect(h.shorty.shortUrl(link)).toBe(link.shortUrl);
+    expect(h.shorty.shortUrl('spring/ig')).toBe(link.shortUrl);
+  });
+});
+
+describe('defaultResolveUser', () => {
+  const req = (fields: Record<string, unknown>) => fields as unknown as Request;
+
+  it('does not miss the conventional id locations', () => {
+    expect(defaultResolveUser(req({ authUserId: 'a1' }))).toEqual({ id: 'a1' });
+    const oid = new Types.ObjectId();
+    expect(defaultResolveUser(req({ user: { _id: oid } }))).toEqual({ id: oid.toHexString() });
+    expect(defaultResolveUser(req({ user: { id: 42 } }))).toEqual({ id: '42' });
+  });
+
+  it('does not miss a display name from name, displayName or email', () => {
+    expect(defaultResolveUser(req({ user: { id: 'u', name: 'Ann' } }))).toEqual({ id: 'u', name: 'Ann' });
+    expect(defaultResolveUser(req({ user: { id: 'u', displayName: 'Ann D' } }))).toEqual({ id: 'u', name: 'Ann D' });
+    expect(defaultResolveUser(req({ user: { id: 'u', email: 'ann@acme.com' } }))).toEqual({ id: 'u', name: 'ann@acme.com' });
+  });
+
+  it('does not invent an actor when there is no id', () => {
+    expect(defaultResolveUser(req({}))).toBeNull();
+    expect(defaultResolveUser(req({ user: {} }))).toBeNull();
+    expect(defaultResolveUser(req({ user: { name: 'No Id' } }))).toBeNull();
+    expect(defaultResolveUser(req({ authUserId: '' }))).toBeNull();
+  });
+});
+
+describe('ERROR_STATUS / ShortyError', () => {
+  it('does not drift from the documented status table', () => {
+    expect({ ...ERROR_STATUS }).toEqual({
+      invalid_url: 400,
+      unsupported_scheme: 400,
+      invalid_base_url: 400,
+      invalid_param: 400,
+      ambiguous_destination: 400,
+      slug_invalid: 400,
+      slug_too_long: 400,
+      slug_reserved: 400,
+      validation: 400,
+      range_too_large: 400,
+      not_found: 404,
+      slug_taken: 409,
+      slug_locked: 409,
+      host_not_allowed: 422,
+      host_blocked: 422,
+      destination_loop: 422,
+      slug_generation_exhausted: 500,
+      case_collision: 500,
+    });
+  });
+
+  it('does not default a ShortyError to any status but its table entry', () => {
+    const err = new ShortyError('slug_taken', undefined, { slug: 'x' });
+    expect(err).toBeInstanceOf(Error);
+    expect(err.status).toBe(409);
+    expect(err.code).toBe('slug_taken');
+    expect(err.details).toEqual({ slug: 'x' });
+    expect(new ShortyError('validation', 418).status).toBe(418);
   });
 });

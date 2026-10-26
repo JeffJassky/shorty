@@ -59,7 +59,10 @@ weakened/skipped · untested paths added · docs/CHANGELOG · `console.log`/TODO
   nothing in the pipeline can change the response; no IP is persisted in any
   form other than the HMAC; uniqueness is decided by `at` against the window,
   never by waiting for TTL deletion; a non-slug path (has `.`, empty, too long,
-  reserved) calls `next()` without a query.
+  reserved) calls `next()` without a query. The router is `router.use` + an
+  explicit GET/HEAD check — `router.get` would let Express auto-answer OPTIONS.
+  `ua-parser-js@1` and `isbot('')` behaviour must be verified against the
+  device/bot tests (an empty UA is a bot even though `isbot('')` is false).
 - **Non-goals:** stats aggregation, routes.
 
 ## PR 3 — inspect (safe fetch, OG, warnings)

@@ -1,11 +1,14 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import mongoose from 'mongoose';
+import os from 'node:os';
 import express from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
 import request from 'supertest';
+import { createShorty } from '../src/server/index.js';
 import { defaultSpaDir } from '../src/server/ui.js';
 import { harness, startDb, stopDb } from './helpers.js';
-import type { UiRuntimeConfig } from '../types/index.js';
+import type { CreateShortyConfig, UiRuntimeConfig } from '../types/index.js';
 
 const bundleExists = fs.existsSync(path.join(defaultSpaDir(), 'index.html'));
 
@@ -104,5 +107,111 @@ describe('defaultSpaDir', () => {
   // esbuild cannot express import.meta.url in CJS; tsup shims it (traps #7).
   it('returns an absolute path from ESM source', () => {
     expect(path.isAbsolute(defaultSpaDir())).toBe(true);
+  });
+});
+
+
+/**
+ * Against a fixture bundle, so these run on a fresh checkout too. Layout:
+ *   <tmp>/package.json          ← a secret one level ABOVE spaDir
+ *   <tmp>/spa/index.html        ← spaDir
+ *   <tmp>/spa/_assets/app.js
+ * createShorty is called directly (no ready(), no DB) — ui() needs neither.
+ */
+describe('SPA serving against a fixture bundle', () => {
+  const SECRET = 'TOP-SECRET-OUTSIDE-SPADIR';
+  let root: string;
+  let spaDir: string;
+  let n = 0;
+
+  beforeAll(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'shorty-ui-'));
+    spaDir = path.join(root, 'spa');
+    fs.mkdirSync(path.join(spaDir, '_assets'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ name: SECRET }));
+    fs.writeFileSync(path.join(spaDir, 'index.html'),
+      '<!doctype html><html><head><!--shorty-config--></head><body>fixture</body></html>');
+    fs.writeFileSync(path.join(spaDir, '_assets', 'app.js'), 'console.log("app")');
+  });
+
+  afterAll(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  function make(config: Partial<CreateShortyConfig> = {}) {
+    n += 1;
+    return createShorty({
+      connection: mongoose,
+      publicBaseUrl: 'https://acme.com/go',
+      pepper: 'p',
+      modelPrefix: `UiFx${n}`,
+      collectionPrefix: `uifx${n}_`,
+      ...config,
+    });
+  }
+
+  it('does not inject anything but the documented defaults when ui() gets no options', async () => {
+    const shorty = make({ ui: { spaDir } });
+    const app = express();
+    app.use('/shorty', shorty.ui());
+    const res = await request(app).get('/shorty/');
+    expect(res.status).toBe(200);
+    expect(res.text).toContain('<base href="/shorty/" />');
+    expect(injected(res.text)).toEqual({
+      apiBase: '/api/shorty',
+      title: 'Links',
+      publicBaseUrl: 'https://acme.com/go',
+      loginUrl: null,
+      returnParam: 'next',
+      slug: { length: 7, caseSensitive: false, rename: 'alias' },
+      redirect: { status: 302, forwardQuery: true },
+      clicksEnabled: true,
+      screenshot: false,
+    } satisfies UiRuntimeConfig);
+  });
+
+  it('does not let config.ui win over options passed to ui() — they merge, call wins', async () => {
+    const shorty = make({ ui: { spaDir, title: 'From config', apiBase: '/cfg/api', returnParam: 'back' } });
+    const app = express();
+    app.use('/admin/links', shorty.ui({ mountPath: '/admin/links', title: 'From call' }));
+    const res = await request(app).get('/admin/links/');
+    const cfg = injected(res.text);
+    expect(cfg.title).toBe('From call');
+    expect(cfg.apiBase).toBe('/cfg/api');
+    expect(cfg.returnParam).toBe('back');
+    expect(res.text).toContain('<base href="/admin/links/" />');
+  });
+
+  it('does not serve deep links as anything but the SPA shell', async () => {
+    const app = express();
+    app.use('/shorty', make().ui({ spaDir }));
+    const res = await request(app).get('/shorty/links/abc/edit');
+    expect(res.status).toBe(200);
+    expect(res.text).toContain('window.__SHORTY__=');
+  });
+
+  it('does not serve hashed assets without long-lived caching', async () => {
+    const app = express();
+    app.use('/shorty', make().ui({ spaDir }));
+    const res = await request(app).get('/shorty/_assets/app.js');
+    expect(res.status).toBe(200);
+    expect(res.headers['cache-control']).toMatch(/max-age=31536000/);
+    expect(res.headers['cache-control']).toMatch(/immutable/);
+  });
+
+  it.each([
+    '/shorty/..%2fpackage.json',
+    '/shorty/..%2f..%2fpackage.json',
+    '/shorty/%2e%2e%2fpackage.json',
+    '/shorty/_assets/..%2f..%2fpackage.json',
+    '/shorty/_assets/..%2f..%2findex.html',
+    '/shorty/_assets/%2e%2e/%2e%2e/package.json',
+  ])('does not escape spaDir for %s', async (url) => {
+    const app = express();
+    app.use('/shorty', make().ui({ spaDir }));
+    const res = await request(app).get(url);
+    expect(res.text ?? '').not.toContain(SECRET);
+    // Either refused, or answered with the SPA shell — never a raw file from outside.
+    if (res.status === 200) expect(res.text).toContain('window.__SHORTY__=');
   });
 });

@@ -73,7 +73,7 @@ describe('publicBaseUrl', () => {
 });
 
 describe('invalid values throw a TypeError naming the key', () => {
-  it.each([0, -1, 2.5, Number.NaN, 1000])('does not accept slug.length %s', (length) => {
+  it.each([0, -1, 2, 2.5, 191, Number.NaN, 1000])('does not accept slug.length %s', (length) => {
     expect(() => make({ slug: { length } })).toThrow(TypeError);
     expect(() => make({ slug: { length } })).toThrow(/slug\.length/);
   });
@@ -98,12 +98,28 @@ describe('invalid values throw a TypeError naming the key', () => {
     expect(() => make({ clicks })).toThrow(/clicks\.timezone/);
   });
 
+  it.each(['aaa', 'a', ''])('does not accept slug.alphabet %j (fewer than 2 distinct chars)', (alphabet) => {
+    expect(() => make({ slug: { alphabet } })).toThrow(TypeError);
+    expect(() => make({ slug: { alphabet } })).toThrow(/slug\.alphabet/);
+  });
+
+  it.each([0, -1])('does not accept clicks.retentionDays %s', (retentionDays) => {
+    expect(() => make({ clicks: { retentionDays } })).toThrow(TypeError);
+    expect(() => make({ clicks: { retentionDays } })).toThrow(/clicks\.retentionDays/);
+  });
+
+  it.each([0, -1])('does not accept clicks.uniqueWindowMinutes %s', (uniqueWindowMinutes) => {
+    expect(() => make({ clicks: { uniqueWindowMinutes } })).toThrow(TypeError);
+    expect(() => make({ clicks: { uniqueWindowMinutes } })).toThrow(/clicks\.uniqueWindowMinutes/);
+  });
+
   it('does not reject the valid edge values', () => {
     expect(() => make({
-      slug: { length: 4, rename: 'never' },
+      slug: { length: 3, alphabet: 'ab', rename: 'never' },
       redirect: { status: 308 },
       clicks: { timezone: 'America/New_York' },
     })).not.toThrow();
+    expect(() => make({ slug: { length: 190 } })).not.toThrow();
   });
 });
 

@@ -1,4 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import express from 'express';
+import type { NextFunction, Request, Response } from 'express';
 import mongoose from 'mongoose';
 import request from 'supertest';
 import {
@@ -495,6 +497,245 @@ describe('tracking failures never reach the response (traps #19)', () => {
     const res = await get(h, '/go/spring');
     expect(res.status).toBe(302);
     expect(res.headers.location).toBe(DEST);
+    await h.shorty.drain();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Audit follow-up
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('slug grammar gate: not-a-slug → next() with no lookup', () => {
+  it.each(['/admin', '/ADMIN', '/api', '/api/users'])(
+    'looks up (or records a miss for) %s although config slug.reserved covers it',
+    async (path) => {
+      const seen: string[] = [];
+      const { h } = await setup({
+        mount: '/',
+        config: {
+          slug: { reserved: ['admin', /^api(\/|$)/] },
+          redirect: { onMiss: 'notFound' },
+          onMiss: (e) => { seen.push(e.path); },
+        },
+      });
+      const ops = await shortyOps(h, async () => {
+        const res = await get(h, path);
+        expect(res.status).toBe(404);
+        expect(res.text).toBe('host 404');
+        await h.shorty.drain();
+      });
+      expect(ops).toEqual([]);
+      expect(seen).toEqual([]);
+      expect(h.shorty.health().misses).toBe(0);
+    },
+  );
+
+  it('treats a non-reserved neighbour (/apiary) as reserved by over-matching', async () => {
+    const { h } = await setup({ mount: '/', config: { slug: { reserved: [/^api(\/|$)/] } } });
+    await get(h, '/apiary');
+    await h.shorty.drain();
+    expect(h.shorty.health().misses).toBe(1);
+  });
+
+  it('skips the lookup and miss row for a valid-grammar path like /api/users when nothing reserves it', async () => {
+    const { h } = await setup({ mount: '/' });
+    const linkColl = h.shorty.models.Link.collection.collectionName;
+    const ops = await shortyOps(h, async () => {
+      const res = await get(h, '/api/users');
+      expect(res.text).toBe('host 404');
+      await h.shorty.drain();
+    });
+    expect(ops.filter((op) => op.startsWith(`${linkColl}.`))).toHaveLength(1);
+    const rows = await h.shorty.models.Miss.find().lean();
+    expect(rows.map((r) => r.path)).toEqual(['/api/users']);
+  });
+
+  it.each([
+    ['empty', '/go/'],
+    ['191 characters', `/go/${'a'.repeat(191)}`],
+    ['a double slash', '/go//x'],
+    ['an inner double slash', '/go/a//b'],
+  ])('looks up a path that is %s', async (_label, path) => {
+    const { h } = await setup({ config: { redirect: { onMiss: 'notFound' } } });
+    const ops = await shortyOps(h, async () => {
+      const res = await get(h, path);
+      expect(res.status).toBe(404);
+      expect(res.text).toBe('host 404');
+      await h.shorty.drain();
+    });
+    expect(ops).toEqual([]);
+  });
+
+  it('refuses a slug of exactly 190 characters', async () => {
+    const slug = 'a'.repeat(190);
+    const { h } = await setup({}, { slug });
+    const res = await get(h, `/go/${slug}`);
+    expect(res.status).toBe(302);
+  });
+
+  it('answers 500 (or looks up) for a malformed percent-escape', async () => {
+    const { h } = await setup({ config: { redirect: { onMiss: 'notFound' } } });
+    const ops = await shortyOps(h, async () => {
+      const res = await get(h, '/go/%E0%A4%A');
+      expect(res.status).toBe(404);
+      expect(res.text).toBe('host 404');
+      await h.shorty.drain();
+    });
+    expect(ops).toEqual([]);
+  });
+
+  it('does not percent-decode and accent-fold the path (Caf%C3%A9 → cafe)', async () => {
+    const { h } = await setup({}, { slug: 'cafe' });
+    const res = await get(h, '/go/Caf%C3%A9');
+    expect(res.status).toBe(302);
+    expect(res.headers.location).toBe(DEST);
+  });
+});
+
+describe('miss records', () => {
+  it('reports a miss path with the mount prefix or the query string attached', async () => {
+    const seen: string[] = [];
+    const { h } = await setup({ config: { onMiss: (e) => { seen.push(e.path); } } });
+    await get(h, '/go/nope-123?x=1');
+    await h.shorty.drain();
+    expect(seen).toEqual(['/nope-123']);
+    const rows = await h.shorty.models.Miss.find().lean();
+    expect(rows.map((r) => r.path)).toEqual(['/nope-123']);
+  });
+
+  it('drops the referrer host from the miss row', async () => {
+    const { h } = await setup();
+    await get(h, '/go/nope-123').set('Referer', 'https://www.news.example/a?b=1');
+    await h.shorty.drain();
+    const [row] = await h.shorty.models.Miss.find().lean();
+    expect(row.referrerHost).toBe('news.example');
+  });
+
+  it('keeps miss rows forever (no 30-day TTL)', async () => {
+    const { h } = await setup();
+    const indexes = (await h.shorty.models.Miss.collection.listIndexes().toArray()) as Array<{
+      key: Record<string, unknown>;
+      expireAfterSeconds?: number;
+    }>;
+    const ttl = indexes.filter((i) => typeof i.expireAfterSeconds === 'number');
+    expect(ttl.map((i) => [i.key, i.expireAfterSeconds])).toEqual([[{ at: 1 }, 2592000]]);
+  });
+
+  it('lets a throwing onMiss change the response', async () => {
+    const { h } = await setup({ config: { onMiss: () => { throw new Error('hook down'); } } });
+    const res = await get(h, '/go/nope-123');
+    expect(res.status).toBe(404);
+    expect(res.text).toBe('host 404');
+    await h.shorty.drain();
+    expect(h.shorty.health().hookFailures).toBe(1);
+  });
+});
+
+describe('crawler card hits are bot clicks', () => {
+  it('counts a crawler served the social card as a human click', async () => {
+    const { h, link } = await setup({}, { social: { title: 'Spring' } });
+    const res = await get(h, '/go/spring', CRAWLER_UA);
+    expect(res.status).toBe(200);
+    await h.shorty.drain();
+    const doc = await h.shorty.models.Link.findById(link.id).lean();
+    expect(doc?.botClicks).toBe(1);
+    expect(doc?.clicks).toBe(0);
+    const clicks = await h.shorty.models.Click.find().lean();
+    expect(clicks.map((c) => c.bot)).toEqual([true]);
+  });
+
+  it('lets crawler card hits use up maxClicks', async () => {
+    const { h } = await setup({}, { social: { title: 'Spring' }, maxClicks: 1 });
+    for (let i = 0; i < 2; i++) {
+      expect((await get(h, '/go/spring', CRAWLER_UA)).status).toBe(200);
+      await h.shorty.drain();
+    }
+    expect((await get(h, '/go/spring')).status).toBe(302);
+    await h.shorty.drain();
+    expect((await get(h, '/go/spring')).status).toBe(410);
+  });
+});
+
+describe('override precedence and exact Location strings', () => {
+  it('lets config forwardQuery: false beat a per-link forwardQuery: true', async () => {
+    const { h } = await setup({ config: { redirect: { forwardQuery: false } } }, { redirect: { forwardQuery: true } });
+    const res = await get(h, '/go/spring?ref=abc');
+    expect(new URL(res.headers.location).searchParams.get('ref')).toBe('abc');
+  });
+
+  it.each([
+    ['https://acme.com/sale', 'https://acme.com/sale'],
+    ['https://acme.com/sale#top', 'https://acme.com/sale#top'],
+  ])('leaves a dangling ? when only qr arrives at a query-less destination (%s)', async (url, expected) => {
+    const { h, link } = await setup({}, { url });
+    expect(link.destination).toBe(expected);
+    const res = await get(h, '/go/spring?qr=1');
+    expect(res.headers.location).toBe(expected);
+  });
+
+  it('reorders, mis-encodes or drops bare keys when appending the incoming query', async () => {
+    const { h } = await setup({}, { url: 'https://acme.com/sale?utm_source=ig&color=red' });
+    const res = await get(h, '/go/spring?ref=abc&debug&q=a+b');
+    expect(res.headers.location).toBe('https://acme.com/sale?utm_source=ig&color=red&ref=abc&debug&q=a%20b');
+  });
+
+  it.each([
+    ['a per-link 308', {}, { redirect: { status: 308 as const } }, '/go/spring'],
+    ['an onMiss URL redirect', { config: { redirect: { onMiss: 'https://acme.com/missing' } } }, {}, '/go/nope-123'],
+  ] as Array<[string, HarnessOptions, Partial<LinkInput>, string]>)(
+    'omits X-Robots-Tag: noindex on %s',
+    async (_label, opts, input, path) => {
+      const { h } = await setup(opts, input);
+      const res = await get(h, path);
+      expect([302, 308]).toContain(res.status);
+      expect(res.headers['x-robots-tag']).toBe('noindex');
+    },
+  );
+
+  it('omits X-Robots-Tag: noindex on an expiredUrl redirect', async () => {
+    const h = await harness();
+    await h.shorty.createLink({
+      url: DEST,
+      slug: 'spring',
+      expiresAt: new Date(h.clock.now.getTime() + HOUR),
+      expiredUrl: 'https://acme.com/over',
+    });
+    h.clock.advance(2 * HOUR);
+    const res = await get(h, '/go/spring');
+    expect(res.status).toBe(302);
+    expect(res.headers['x-robots-tag']).toBe('noindex');
+  });
+
+  it.each(['patch', 'options'] as const)('handles %s on a known slug instead of falling through', async (method) => {
+    const { h } = await setup();
+    const res = await request(h.app)[method]('/go/spring').set('User-Agent', HUMAN_UA);
+    expect(res.status).toBe(404);
+    expect(res.text).toBe('host 404');
+  });
+});
+
+describe('lookup failure (DB down)', () => {
+  it("hangs or answers itself instead of handing the error to the host's error handler", async () => {
+    const { h } = await setup();
+    const app = express();
+    app.use('/go', h.shorty.redirect);
+    app.use((_req: Request, res: Response) => { res.status(404).send('host 404'); });
+    app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
+      res.status(599).type('text').send(`host error: ${err.message}`);
+    });
+
+    // Every read path the lookup could take rejects at the collection level,
+    // which both Model.findOne and raw collection calls go through.
+    const coll = h.shorty.models.Link.collection as unknown as Record<string, unknown>;
+    const down = () => Promise.reject(new Error('db down'));
+    for (const method of ['findOne', 'find', 'aggregate']) coll[method] = down;
+    try {
+      const res = await request(app).get('/go/spring').set('User-Agent', HUMAN_UA).timeout(5000);
+      expect(res.status).toBe(599);
+      expect(res.text).toContain('db down');
+    } finally {
+      for (const method of ['findOne', 'find', 'aggregate']) delete coll[method];
+    }
     await h.shorty.drain();
   });
 });

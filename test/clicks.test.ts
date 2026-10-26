@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import express from 'express';
 import mongoose from 'mongoose';
 import request from 'supertest';
@@ -558,5 +558,294 @@ describe('concurrency (traps #14)', () => {
     const clicks = await clicksOf(h, link);
     expect(clicks.filter((c) => c.unique)).toHaveLength(1);
     expect(await daily(h, link)).toMatchObject({ clicks: 10, uniques: 1 });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Audit follow-up
+// ─────────────────────────────────────────────────────────────────────────────
+
+const IPAD_UA =
+  'Mozilla/5.0 (iPad; CPU OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1';
+/** A real browser on a device that is neither desktop, phone nor tablet. Not a bot. */
+const SMART_TV_UA =
+  'Mozilla/5.0 (SMART-TV; Linux; Tizen 6.0) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/4.0 Chrome/76.0.3809.146 TV Safari/537.36';
+
+/** Replace collection-level methods with rejecting ones; returns a restore fn. */
+function sabotage(collection: unknown, methods: string[]): () => void {
+  const coll = collection as Record<string, unknown>;
+  for (const m of methods) coll[m] = () => Promise.reject(new Error('db down'));
+  return () => { for (const m of methods) delete coll[m]; };
+}
+
+describe('client IP source', () => {
+  it('ignores a clicks.ip adapter and hashes req.ip instead', async () => {
+    const { h, link } = await setup({ config: { clicks: { ip: () => '192.0.2.1' } } });
+    await hit(h.app, '/go/spring', { ip: '203.0.113.1' });
+    await hit(h.app, '/go/spring', { ip: '203.0.113.2' });
+    await h.shorty.drain();
+    const [a, b] = await clicksOf(h, link);
+    expect(a.visitor).toBe(b.visitor);
+    expect((await linkDoc(h, link)).uniqueClicks).toBe(1);
+  });
+
+  it('trusts X-Forwarded-For when the host has not enabled trust proxy', async () => {
+    const { h, link } = await setup();
+    const app = express(); // no `trust proxy`
+    app.use('/go', h.shorty.redirect);
+    await hit(app, '/go/spring', { ip: '203.0.113.1' });
+    await hit(app, '/go/spring', { ip: '203.0.113.2' });
+    await h.shorty.drain();
+    const [a, b] = await clicksOf(h, link);
+    expect(a.visitor).toBe(b.visitor);
+    expect((await linkDoc(h, link)).uniqueClicks).toBe(1);
+  });
+});
+
+describe('unique namespaces and the fixed window', () => {
+  it("lets a HEAD prefetch consume the human's unique slot", async () => {
+    const { h, link } = await setup();
+    await request(h.app).head('/go/spring').set('User-Agent', HUMAN_UA).set('X-Forwarded-For', '198.51.100.1');
+    await h.shorty.drain();
+    await hit(h.app, '/go/spring');
+    await h.shorty.drain();
+
+    const [head, human] = await clicksOf(h, link);
+    expect(head).toMatchObject({ bot: true, unique: true });
+    expect(human).toMatchObject({ bot: false, unique: true });
+    const doc = await linkDoc(h, link);
+    expect(doc).toMatchObject({ clicks: 1, uniqueClicks: 1, botClicks: 1 });
+    expect(await daily(h, link)).toMatchObject({ clicks: 1, uniques: 1, bots: 1, botUniques: 1 });
+  });
+
+  it('slides the window on repeats instead of fixing it at the unique hit', async () => {
+    const { h, link } = await setup({ config: { clicks: { uniqueWindowMinutes: 5 } } });
+    for (const offset of [0, 4, 4]) {
+      h.clock.advance(offset * MINUTE);
+      await hit(h.app, '/go/spring');
+      await h.shorty.drain();
+    }
+    // hits at 0, 4, 8 minutes: 8 is past the window that opened at 0
+    expect((await clicksOf(h, link)).map((c) => c.unique)).toEqual([true, false, true]);
+  });
+
+  it('counts a bot ?qr=1 hit in the human qr rollup', async () => {
+    const { h, link } = await setup();
+    await hit(h.app, '/go/spring?qr=1', { ua: BOT_UA });
+    await h.shorty.drain();
+    const [c] = await clicksOf(h, link);
+    expect(c).toMatchObject({ bot: true, qr: true });
+    expect(await daily(h, link)).toMatchObject({ qr: 0, clicks: 0, bots: 1 });
+  });
+});
+
+describe('pipeline failures', () => {
+  it('changes the redirect (or fails to count) when the click insert rejects', async () => {
+    const { h } = await setup();
+    const restore = sabotage(h.shorty.models.Click.collection, ['insertOne', 'insertMany', 'bulkWrite']);
+    try {
+      const res = await hit(h.app, '/go/spring');
+      expect(res.status).toBe(302);
+      expect(res.headers.location).toBe(DEST);
+      await h.shorty.drain();
+    } finally {
+      restore();
+    }
+    expect(h.shorty.health().clickFailures).toBe(1);
+  });
+
+  it('does not count a throwing track as a hook failure', async () => {
+    const { h } = await setup({
+      config: { track: (name) => { if (name === 'shorty.clicked') throw new Error('telemetry down'); } },
+    });
+    const res = await hit(h.app, '/go/spring');
+    expect(res.status).toBe(302);
+    await h.shorty.drain();
+    expect(h.shorty.health().hookFailures).toBe(1);
+    expect(h.shorty.health().clickFailures).toBe(0);
+  });
+
+  it('swallows a throwing hook without logging it', async () => {
+    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const { h } = await setup({ config: { logger, onClick: () => { throw new Error('boom'); } } });
+    await hit(h.app, '/go/spring');
+    await h.shorty.drain();
+    expect(logger.error).toHaveBeenCalled();
+  });
+
+  it('records nothing (or fails) for a garbage Referer', async () => {
+    const { h, link } = await setup();
+    const res = await hit(h.app, '/go/spring', { headers: { Referer: 'not a url' } });
+    expect(res.status).toBe(302);
+    await h.shorty.drain();
+    const clicks = await clicksOf(h, link);
+    expect(clicks).toHaveLength(1);
+    expect(clicks[0].referrer).toBeUndefined();
+    expect(clicks[0].referrerHost).toBeUndefined();
+    expect(h.shorty.health().clickFailures).toBe(0);
+  });
+});
+
+describe('health().inFlight', () => {
+  it('reports 0 in flight while a pipeline is still running', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let entered!: () => void;
+    const inHook = new Promise<void>((resolve) => { entered = resolve; });
+    const { h } = await setup({ config: { onClick: async () => { entered(); await gate; } } });
+    const res = await hit(h.app, '/go/spring').timeout(5000);
+    expect(res.status).toBe(302);
+    await inHook;
+    expect(h.shorty.health().inFlight).toBeGreaterThan(0);
+    release();
+    await h.shorty.drain();
+    expect(h.shorty.health().inFlight).toBe(0);
+  });
+});
+
+describe('device classification', () => {
+  it.each([
+    ['an iPad', IPAD_UA, 'tablet'],
+    ['a smart TV', SMART_TV_UA, 'other'],
+  ] as const)('misclassifies %s', async (_label, ua, device) => {
+    const { h, link } = await setup();
+    await hit(h.app, '/go/spring', { ua });
+    await h.shorty.drain();
+    const [c] = await clicksOf(h, link);
+    expect(c.bot).toBe(false);
+    expect(c.device).toBe(device);
+  });
+});
+
+describe('geo edge cases', () => {
+  it('falls back to CDN headers when a custom geo adapter returns null', async () => {
+    const { h, link } = await setup({ config: { clicks: { geo: () => null } } });
+    await hit(h.app, '/go/spring', { headers: { 'cf-ipcountry': 'DE' } });
+    await h.shorty.drain();
+    const [c] = await clicksOf(h, link);
+    expect(c.country).toBeUndefined();
+  });
+
+  it.each(['ZZZ', '1', ''])('stores an invalid country header value %j', async (value) => {
+    const { h, link } = await setup();
+    await hit(h.app, '/go/spring', { headers: { 'cf-ipcountry': value } });
+    await h.shorty.drain();
+    const [c] = await clicksOf(h, link);
+    expect(c.country).toBeUndefined();
+  });
+
+  it('prefers x-vercel-ip-country over cf-ipcountry', async () => {
+    const { h, link } = await setup();
+    await hit(h.app, '/go/spring', { headers: { 'cf-ipcountry': 'DE', 'x-vercel-ip-country': 'FR' } });
+    await h.shorty.drain();
+    const [c] = await clicksOf(h, link);
+    expect(c.country).toBe('DE');
+  });
+});
+
+describe('onClick only fires when a click exists', () => {
+  it('calls onClick with clicks: false', async () => {
+    const onClick = vi.fn();
+    const { h } = await setup({ config: { clicks: false, onClick } });
+    expect((await hit(h.app, '/go/spring')).status).toBe(302);
+    await h.shorty.drain();
+    expect(onClick).not.toHaveBeenCalled();
+  });
+
+  it('calls onClick without a pepper', async () => {
+    const saved = process.env.SHORTY_PEPPER;
+    delete process.env.SHORTY_PEPPER;
+    try {
+      const onClick = vi.fn();
+      const { h } = await setup({ config: { pepper: undefined, onClick } });
+      expect((await hit(h.app, '/go/spring')).status).toBe(302);
+      await h.shorty.drain();
+      expect(onClick).not.toHaveBeenCalled();
+    } finally {
+      if (saved !== undefined) process.env.SHORTY_PEPPER = saved;
+    }
+  });
+
+  it('calls onClick for an expired hit', async () => {
+    const onClick = vi.fn();
+    const h = await harness({ config: { onClick } });
+    await h.shorty.createLink({ url: DEST, slug: 'spring', expiresAt: new Date(h.clock.now.getTime() + MINUTE) });
+    h.clock.advance(2 * MINUTE);
+    expect((await hit(h.app, '/go/spring')).status).toBe(410);
+    await h.shorty.drain();
+    expect(onClick).not.toHaveBeenCalled();
+  });
+});
+
+describe('indexes built by ready() (traps #3, #17)', () => {
+  type IndexInfo = { name: string; key: Record<string, unknown>; unique?: boolean; expireAfterSeconds?: number };
+  async function indexesOf(model: { collection: { listIndexes(): { toArray(): Promise<unknown[]> } } }) {
+    return (await model.collection.listIndexes().toArray()) as IndexInfo[];
+  }
+  // Key ORDER matters for a compound index, so compare serialized keys.
+  const keyOf = (i: IndexInfo) => JSON.stringify(i.key);
+
+  it.each(['Daily', 'Link', 'History', 'Slug'] as const)('puts a TTL on %s, which must be kept forever', async (name) => {
+    const h = await harness();
+    const indexes = await indexesOf(h.shorty.models[name]);
+    expect(indexes.filter((i) => i.expireAfterSeconds !== undefined)).toEqual([]);
+  });
+
+  it('is missing the links lookup, list or search indexes', async () => {
+    const h = await harness();
+    const indexes = await indexesOf(h.shorty.models.Link);
+    const keys = indexes.map(keyOf);
+    expect(keys).toContain(JSON.stringify({ keys: 1 }));
+    expect(keys).toContain(JSON.stringify({ archived: 1, createdAt: -1 }));
+    expect(indexes.map((i) => i.name)).toContain('shorty_search');
+  });
+
+  it('is missing the unique daily {linkId, day} or seen {linkId, visitor} index, or clicks {linkId, at}', async () => {
+    const h = await harness();
+    const dailyIdx = (await indexesOf(h.shorty.models.Daily)).find((i) => keyOf(i) === JSON.stringify({ linkId: 1, day: 1 }));
+    expect(dailyIdx?.unique).toBe(true);
+    const seenIdx = (await indexesOf(h.shorty.models.Seen)).find((i) => keyOf(i) === JSON.stringify({ linkId: 1, visitor: 1 }));
+    expect(seenIdx?.unique).toBe(true);
+    const clickKeys = (await indexesOf(h.shorty.models.Click)).map(keyOf);
+    expect(clickKeys).toContain(JSON.stringify({ linkId: 1, at: -1 }));
+  });
+});
+
+describe('aggregation caps (traps #18)', () => {
+  it('issues an aggregation without maxTimeMS from stats / paramValues / tags', async () => {
+    const { h, link } = await setup();
+    await hit(h.app, '/go/spring');
+    await h.shorty.drain();
+
+    const prefix = h.prefixes.collectionPrefix;
+    const aggregates: Array<{ coll: string; options: unknown }> = [];
+    mongoose.set('debug', (coll: string, method: string, ...args: unknown[]) => {
+      if (coll.startsWith(prefix) && method === 'aggregate') aggregates.push({ coll, options: args[1] });
+    });
+    const counts: Record<string, number> = {};
+    try {
+      const calls: Array<[string, () => Promise<unknown>]> = [
+        ['stats(link)', () => h.shorty.stats({ linkId: link.id, from: '2026-03-01', to: '2026-03-15' })],
+        ['stats(overview)', () => h.shorty.stats({ from: '2026-03-01', to: '2026-03-15' })],
+        ['paramValues', () => h.shorty.paramValues()],
+        ['tags', () => h.shorty.tags()],
+      ];
+      for (const [label, call] of calls) {
+        const before = aggregates.length;
+        await call();
+        counts[label] = aggregates.length - before;
+      }
+    } finally {
+      mongoose.set('debug', false);
+    }
+    // stats and paramValues are aggregations by design (§7.4, breakdowns); tags
+    // may be a distinct — but whatever aggregates it issues must be capped too.
+    for (const label of ['stats(link)', 'stats(overview)', 'paramValues']) {
+      expect(counts[label], label).toBeGreaterThan(0);
+    }
+    for (const a of aggregates) {
+      const maxTimeMS = (a.options as { maxTimeMS?: unknown } | undefined)?.maxTimeMS;
+      expect(typeof maxTimeMS === 'number' && maxTimeMS > 0, `${a.coll} aggregate has maxTimeMS`).toBe(true);
+    }
   });
 });

@@ -568,3 +568,203 @@ describe('inspect — screenshot adapter', () => {
     expect(codes(r)).not.toContain('unreachable');
   });
 });
+
+describe('inspect — default address policy, edges (audit follow-up)', () => {
+  // Public addresses below would make a real outbound attempt; a 300 ms budget
+  // keeps it bounded. 'unreachable' is fine — only 'private_address' is wrong.
+  it('does not mistake a public address for a private one', async () => {
+    const shorty = await inspector({ timeoutMs: 300, lookup: async () => ['93.184.216.34'] });
+    const r = await shorty.inspect('http://public.test:9/');
+    expect(codes(r)).not.toContain('private_address');
+  });
+
+  it.each(['172.32.0.1', '100.128.0.1'])('does not block %s, just outside a private range', async (addr) => {
+    const shorty = await inspector({ timeoutMs: 300, lookup: async () => [addr] });
+    const r = await shorty.inspect('http://edge.test:9/');
+    expect(codes(r)).not.toContain('private_address');
+  });
+
+  const moreBlocked = [
+    '224.0.0.1', // multicast
+    'ff02::1', // v6 multicast
+    '240.0.0.1', // reserved (class E)
+    '255.255.255.255', // broadcast
+    '192.0.2.1', // TEST-NET-1 documentation
+    '::', // v6 unspecified
+    '::ffff:10.0.0.5', // v4-mapped private
+    '172.31.255.255', // top of 172.16/12
+    '100.127.255.255', // top of CGNAT 100.64/10
+  ];
+
+  it.each(moreBlocked)('refuses a hostname that resolves to %s', async (addr) => {
+    const s = await site({ '/': page('<title>SECRET</title>') });
+    const shorty = await inspector({ lookup: async () => [addr] });
+    const r = await shorty.inspect(`http://sneaky.test:${s.port}/`);
+    expect(codes(r)).toContain('private_address');
+    expect(s.hits).toEqual([]);
+    expect(r.final).toBeUndefined();
+  });
+
+  it.each([
+    ['[::1]', 'v6 loopback literal'],
+    ['2130706433', 'decimal-integer 127.0.0.1'],
+    ['0x7f.1', 'hex short-form 127.0.0.1'],
+    ['127.1', 'short-form 127.0.0.1'],
+  ])('refuses %s (%s) without connecting', async (host) => {
+    const s = await site({ '/': page('<title>SECRET</title>') });
+    const r = await (await inspector()).inspect(`http://${host}:${s.port}/`);
+    expect(codes(r)).toContain('private_address');
+    expect(s.hits).toEqual([]);
+  });
+
+  it('throws invalid_url for a url carrying credentials', async () => {
+    const err = await (await inspector()).inspect('http://user:pass@example.com/').catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ShortyError);
+    expect((err as ShortyError).code).toBe('invalid_url');
+  });
+});
+
+describe('inspect — redirect edges (audit follow-up)', () => {
+  it('does not follow a redirect to file:///etc/passwd', async () => {
+    const s = await site({ '/x': redirectTo('file:///etc/passwd') });
+    const url = `${s.origin}/x`;
+    const r = await (await local()).inspect(url);
+    expect(r.chain).toEqual([{ url, status: 302 }]);
+    expect(r.chain.some((hop) => hop.url.startsWith('file:'))).toBe(false);
+    expect(r.og.title).toBeUndefined();
+  });
+
+  it('ends the chain at a 3xx without a Location header, reporting that response as final', async () => {
+    const s = await site({ '/nowhere': (_req, res) => { res.statusCode = 302; res.end(); } });
+    const url = `${s.origin}/nowhere`;
+    const r = await (await local()).inspect(url);
+    expect(r.chain).toEqual([{ url, status: 302 }]);
+    expect(r.final).toMatchObject({ url, status: 302 });
+  });
+
+  it('reports a redirect loop as unreachable instead of spinning', async () => {
+    const s = await site({ '/a': redirectTo('/b'), '/b': redirectTo('/a') });
+    const { value: r, ms } = await timed(async () => (await local()).inspect(`${s.origin}/a`));
+    expect(codes(r)).toContain('unreachable');
+    expect(ms).toBeLessThan(3000);
+    expect(s.hits.length).toBeLessThanOrEqual(6); // 1 + default maxRedirects
+  });
+
+  it('does not warn query_dropped for an input url that had no query', async () => {
+    const s = await site({ '/x': redirectTo('/y', 301), '/y': page('<title>Y</title>') });
+    const r = await (await local()).inspect(`${s.origin}/x`);
+    expect(codes(r)).toContain('redirects');
+    expect(codes(r)).not.toContain('query_dropped');
+  });
+
+  it('follows 5 redirects by default but not 6', async () => {
+    const routes: Record<string, SiteHandler> = { '/end': page('<title>End</title>') };
+    for (let i = 0; i < 6; i++) routes[`/r${i}`] = redirectTo(i === 5 ? '/end' : `/r${i + 1}`);
+    const s = await site(routes);
+    const shorty = await local();
+    const five = await shorty.inspect(`${s.origin}/r1`);
+    expect(codes(five)).not.toContain('unreachable');
+    expect(five.og.title).toBe('End');
+    expect(five.chain).toHaveLength(6);
+    const six = await shorty.inspect(`${s.origin}/r0`);
+    expect(codes(six)).toContain('unreachable');
+  });
+});
+
+describe('inspect — utm_incomplete edges (audit follow-up)', () => {
+  it('warns when medium and campaign are set but source is missing', async () => {
+    const s = await site({ '/': page('<title>Home</title>') });
+    const r = await (await local()).inspect(`${s.origin}/?utm_medium=social&utm_campaign=spring`);
+    expect(codes(r)).toContain('utm_incomplete');
+  });
+
+  it('treats an empty utm_source= as absent', async () => {
+    const s = await site({ '/': page('<title>Home</title>') });
+    const r = await (await local()).inspect(`${s.origin}/?utm_source=&utm_medium=social&utm_campaign=spring`);
+    expect(codes(r)).toContain('utm_incomplete');
+  });
+});
+
+describe('inspect — budget and body handling (audit follow-up)', () => {
+  it('bounds a DNS lookup that never resolves by timeoutMs', async () => {
+    const shorty = await inspector({ timeoutMs: 300, lookup: () => new Promise<string[]>(() => {}) });
+    const { value: r, ms } = await timed(() => shorty.inspect('http://stuck-dns.test/'));
+    expect(codes(r)).toContain('unreachable');
+    expect(ms).toBeLessThan(2000);
+  });
+
+  it('bounds a screenshot adapter that never resolves by timeoutMs, keeping the scraped OG', async () => {
+    const s = await site({ '/': page('<title>Fast page</title>') });
+    const shorty = await inspector(
+      { isAllowedAddress: allowLoopback, timeoutMs: 500 },
+      { screenshot: () => new Promise(() => {}) },
+    );
+    const { value: r, ms } = await timed(() => shorty.inspect(`${s.origin}/`));
+    expect(ms).toBeLessThan(2500);
+    expect(r.screenshot).toBeUndefined();
+    expect(r.og.title).toBe('Fast page');
+    expect(r.final?.status).toBe(200);
+  });
+
+  it('stops at maxBytes on an endless head that never reaches </head> — 200 with partial OG, not unreachable', async () => {
+    const s = await site({
+      '/endless': (_req, res) => {
+        res.setHeader('content-type', 'text/html; charset=utf-8');
+        res.write('<!doctype html><html><head><meta property="og:title" content="Big">');
+        const t = setInterval(() => res.write(`<meta name="filler" content="${'y'.repeat(1000)}">`), 5);
+        res.on('close', () => clearInterval(t));
+      },
+    });
+    const shorty = await local({ maxBytes: 50_000, timeoutMs: 5000 });
+    const { value: r, ms } = await timed(() => shorty.inspect(`${s.origin}/endless`));
+    expect(ms).toBeLessThan(3000);
+    expect(r.final?.status).toBe(200);
+    expect(r.og.title).toBe('Big');
+    expect(codes(r)).not.toContain('unreachable');
+  });
+
+  it('does not scrape a non-HTML body (image/png that happens to contain a <title>)', async () => {
+    const s = await site({
+      '/img.png': (_req, res) => {
+        res.setHeader('content-type', 'image/png');
+        res.end(Buffer.concat([
+          Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+          Buffer.from('<head><title>Fake</title><meta property="og:image" content="/x.png"></head>'),
+        ]));
+      },
+    });
+    const r = await (await local()).inspect(`${s.origin}/img.png`);
+    expect(r.final?.status).toBe(200);
+    expect(r.og).toEqual({});
+  });
+
+  it('hands the screenshot adapter the FINAL url after redirects', async () => {
+    const s = await site({ '/start': redirectTo('/landing'), '/landing': page('<title>L</title>') });
+    const asked: string[] = [];
+    const shorty = await inspector(
+      { isAllowedAddress: allowLoopback },
+      { screenshot: async (url) => { asked.push(url); return null; } },
+    );
+    await shorty.inspect(`${s.origin}/start`);
+    expect(asked).toEqual([`${s.origin}/landing`]);
+  });
+
+  it('does not call the screenshot adapter for an unreachable destination', async () => {
+    const asked: string[] = [];
+    const shorty = await inspector(
+      { isAllowedAddress: () => true, lookup: async () => { throw new Error('ENOTFOUND'); } },
+      { screenshot: async (url) => { asked.push(url); return null; } },
+    );
+    await shorty.inspect('http://nxdomain.test/');
+    expect(asked).toEqual([]);
+  });
+
+  it('sends the default User-Agent when none is configured', async () => {
+    let ua: string | undefined;
+    const s = await site({
+      '/ua': (req, res) => { ua = req.headers['user-agent']; page('<title>U</title>')(req, res); },
+    });
+    await (await local()).inspect(`${s.origin}/ua`);
+    expect(ua).toBe('shorty-inspect (+link preview)');
+  });
+});

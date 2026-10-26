@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import express from 'express';
 import request from 'supertest';
+import { Types } from 'mongoose';
 import { ERROR_STATUS } from '../src/shared/errors.js';
 import type { ShortyErrorCode } from '../types/index.js';
 import type { LinkJson } from '../types/client.js';
@@ -405,5 +406,158 @@ describe('routes — actor stamping', () => {
     expect(res.body.link.createdBy).toBeUndefined();
     const list = await request(h.app).get(`${API}/links`);
     expect(list.status).toBe(200);
+  });
+});
+
+describe('routes — hooks receive req and actor (audit follow-up)', () => {
+  it('passes req and the resolveUser actor to onCreate/onUpdate/onArchive/onDelete when called over HTTP', async () => {
+    const seen: Record<string, { actor?: unknown; url?: string; extra?: unknown }> = {};
+    const h = await harness({
+      config: {
+        onCreate: (e) => { seen.create = { actor: e.actor, url: e.req?.originalUrl }; },
+        onUpdate: (e) => { seen.update = { actor: e.actor, url: e.req?.originalUrl, extra: e.prev.title }; },
+        onArchive: (e) => { seen.archive = { actor: e.actor, url: e.req?.originalUrl, extra: e.archived }; },
+        onDelete: (e) => { seen.delete = { actor: e.actor, url: e.req?.originalUrl, extra: e.summary.keys }; },
+      },
+    });
+    h.session.actor = { id: 'u_9', name: 'Hook Tester' };
+    const actor = { id: 'u_9', name: 'Hook Tester' };
+    const link = await create(h, { url: 'https://example.com/a', title: 'before' });
+    expect(seen.create).toEqual({ actor, url: `${API}/links` });
+
+    await request(h.app).patch(`${API}/links/${link.id}`).send({ title: 'after' });
+    expect(seen.update).toEqual({ actor, url: `${API}/links/${link.id}`, extra: 'before' });
+
+    await request(h.app).post(`${API}/links/${link.id}/archive`);
+    expect(seen.archive).toEqual({ actor, url: `${API}/links/${link.id}/archive`, extra: true });
+
+    await request(h.app).delete(`${API}/links/${link.id}`);
+    expect(seen.delete).toEqual({ actor, url: `${API}/links/${link.id}`, extra: 1 });
+  });
+});
+
+describe('routes — malformed and unknown ids, more routes (audit follow-up)', () => {
+  it('answers 404 not_found (not 500 CastError) for a malformed id on stats, archive and unarchive', async () => {
+    const h = await harness();
+    expectError(await request(h.app).get(`${API}/links/nope/stats`).query({ from: '2026-03-01', to: '2026-03-02' }), 'not_found');
+    expectError(await request(h.app).post(`${API}/links/nope/archive`), 'not_found');
+    expectError(await request(h.app).post(`${API}/links/nope/unarchive`), 'not_found');
+  });
+
+  it('answers 404 not_found for stats of an unknown (well-formed) link id', async () => {
+    const h = await harness();
+    expectError(await request(h.app).get(`${API}/links/${UNKNOWN_ID}/stats`).query({ from: '2026-03-01', to: '2026-03-02' }), 'not_found');
+    const err = await h.shorty.stats({ linkId: UNKNOWN_ID, from: '2026-03-01', to: '2026-03-02' }).catch((e: unknown) => e);
+    expect((err as { code?: string }).code).toBe('not_found');
+  });
+});
+
+describe('routes — list query coercion (audit follow-up)', () => {
+  async function seeded() {
+    const h = await harness();
+    const live = await create(h, { url: 'https://example.com/live', title: 'Spring sale', tags: ['x'] });
+    h.clock.advance(1000);
+    const busy = await create(h, { url: 'https://example.com/busy', title: 'Busy one' });
+    h.clock.advance(1000);
+    const old = await create(h, { url: 'https://example.com/old', title: 'Old' });
+    await request(h.app).post(`${API}/links/${old.id}/archive`);
+    await h.shorty.models.Link.updateOne({ _id: busy.id }, { $set: { clicks: 50 } });
+    await h.shorty.models.Link.updateOne({ _id: live.id }, { $set: { clicks: 5 } });
+    return { h, live, busy, old };
+  }
+  const ids = (res: request.Response) => (res.body.items as LinkJson[]).map((l) => l.id);
+
+  it('does not read ?archived=false as truthy', async () => {
+    const { h, live, busy } = await seeded();
+    const res = await request(h.app).get(`${API}/links`).query({ archived: 'false' });
+    expect(ids(res).sort()).toEqual([live.id, busy.id].sort());
+  });
+
+  it('honours ?archived=true (only archived) and ?archived=all (both)', async () => {
+    const { h, live, busy, old } = await seeded();
+    expect(ids(await request(h.app).get(`${API}/links`).query({ archived: 'true' }))).toEqual([old.id]);
+    expect(ids(await request(h.app).get(`${API}/links`).query({ archived: 'all' })).sort())
+      .toEqual([live.id, busy.id, old.id].sort());
+  });
+
+  it('passes sort, tag and q through to the list', async () => {
+    const { h, live, busy } = await seeded();
+    expect(ids(await request(h.app).get(`${API}/links`).query({ sort: 'clicks' }))).toEqual([busy.id, live.id]);
+    expect(ids(await request(h.app).get(`${API}/links`).query({ tag: 'x' }))).toEqual([live.id]);
+    expect(ids(await request(h.app).get(`${API}/links`).query({ q: 'spring' }))).toEqual([live.id]);
+  });
+});
+
+describe('routes — stats query coercion and missing input (audit follow-up)', () => {
+  it('coerces ?top=3 and ?interval=week from strings', async () => {
+    const h = await harness();
+    const link = await create(h, { url: 'https://example.com/a' });
+    await h.shorty.models.Click.insertMany(['a', 'b', 'c', 'd', 'e'].map((r, i) => ({
+      linkId: new Types.ObjectId(link.id), rev: 1, at: h.clock.now, visitor: `v${i}`, unique: true, bot: false,
+      qr: false, device: 'desktop' as const, referrerHost: `${r}.test`,
+    })));
+    const res = await request(h.app).get(`${API}/links/${link.id}/stats`)
+      .query({ from: '2026-03-02', to: '2026-03-15', interval: 'week', top: '3' });
+    expect(res.status).toBe(200);
+    expect(res.body.range.interval).toBe('week');
+    expect(res.body.series.map((p: { date: string }) => p.date)).toEqual(['2026-03-02', '2026-03-09']);
+    expect(res.body.breakdowns.referrer).toHaveLength(3);
+  });
+
+  it('answers 400 (not 500) when from is missing', async () => {
+    const h = await harness();
+    const res = await request(h.app).get(`${API}/stats`).query({ to: '2026-03-15' });
+    expectError(res, 'validation');
+  });
+
+  it('answers 400 (not 500) for POST /inspect with no body', async () => {
+    const h = await harness();
+    const res = await request(h.app).post(`${API}/inspect`);
+    expect(res.status).toBe(400);
+    expect(res.headers['content-type']).toMatch(/application\/json/);
+    expect(typeof res.body.error).toBe('string');
+  });
+
+  it('answers 400 (not 500) for PATCH /links/:id with no body', async () => {
+    const h = await harness();
+    const link = await create(h, { url: 'https://example.com/a' });
+    const res = await request(h.app).patch(`${API}/links/${link.id}`);
+    expect(res.status).toBe(400);
+    expect(res.headers['content-type']).toMatch(/application\/json/);
+    expect(typeof res.body.error).toBe('string');
+  });
+
+  it('answers 400 (not 500) for GET /slugs/check without a slug', async () => {
+    const h = await harness();
+    const res = await request(h.app).get(`${API}/slugs/check`);
+    expect(res.status).toBe(400);
+    expect(res.headers['content-type']).toMatch(/application\/json/);
+    expect(typeof res.body.error).toBe('string');
+  });
+});
+
+describe('routes — error body and fall-through (audit follow-up)', () => {
+  it('answers an error body that is { error, ...details } — error always present, never a bare string', async () => {
+    // No code is specified to carry particular details, so only the shape is pinned.
+    const h = await harness();
+    await create(h, { url: 'https://example.com/a', slug: 'dup' });
+    const res = await request(h.app).post(`${API}/links`).send({ url: 'https://example.com/b', slug: 'dup' });
+    expectError(res, 'slug_taken');
+    expect(typeof res.body).toBe('object');
+    expect(Object.keys(res.body)).toContain('error');
+  });
+
+  it('falls through to the host for a path it does not define (GET /nope)', async () => {
+    const h = await harness();
+    const res = await request(h.app).get(`${API}/nope`);
+    expect(res.status).toBe(404);
+    expect(res.text).toBe('host 404');
+  });
+
+  it('falls through to the host for an undefined method on a defined path (DELETE /params)', async () => {
+    const h = await harness();
+    const res = await request(h.app).delete(`${API}/params`);
+    expect(res.status).toBe(404);
+    expect(res.text).toBe('host 404');
   });
 });

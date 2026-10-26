@@ -238,6 +238,8 @@ export interface LinkInput {
  * - `redirect` merges; a key set to `null` falls back to config.
  *
  * A revision is written only when the composed destination actually changes.
+ * An empty patch `{}` is a valid no-op (returns the link; no history, no hook
+ * history entries). A missing body over HTTP is a 400.
  */
 export interface LinkPatch {
   url?: string;
@@ -315,6 +317,11 @@ export interface SlugCheck {
 // Clicks, stats, catalog
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * From the UA parser's device type: mobile → mobile, tablet → tablet, smarttv /
+ * console / wearable / embedded → other, no device type (desktop browsers,
+ * unrecognised UAs) → desktop.
+ */
 export type Device = 'desktop' | 'mobile' | 'tablet' | 'other';
 
 /**
@@ -518,12 +525,17 @@ export interface SlugConfig {
   length?: number;
   /** Generated slug alphabet. Default `'23456789abcdefghjkmnpqrstuvwxyz'` (no 0 1 i l o); ≥ 2 distinct chars. */
   alphabet?: string;
-  /** Overrides length/alphabet. Output is still validated and collision-checked. */
+  /**
+   * Overrides length/alphabet. Output is validated and collision-checked;
+   * invalid/reserved output is retried like a collision, then
+   * `slug_generation_exhausted`.
+   */
   generate?: () => string;
   /**
    * EXTENDS the builtin reserved list (anything starting with `_`), never
-   * replaces it. Strings match a whole normalized slug; RegExps are tested
-   * against it.
+   * replaces it. Matched AFTER normalization (so `'admin'` also reserves
+   * `/ADMIN` when case-insensitive): strings match the whole slug key; RegExps
+   * are tested against it.
    */
   reserved?: Array<string | RegExp>;
   /**
@@ -666,7 +678,8 @@ export interface CreateShortyConfig {
   screenshot?: ScreenshotAdapter;
 
   // Hooks — awaited, caught, logged, counted in `health().hookFailures`. None can
-  // fail a write or a redirect.
+  // fail a write or a redirect. Lifecycle hooks complete BEFORE the write's
+  // promise / HTTP response resolves; `onClick` / `onMiss` run after the redirect.
   /**
    * After the redirect response is sent. Bots included, flagged — a crawler
    * served the social card is a bot click. Not called when recording is off
@@ -733,6 +746,7 @@ export interface DailyDoc {
   day: string;
   clicks: number;
   uniques: number;
+  /** HUMAN qr hits only — a bot's click row keeps `qr: true`, the rollup doesn't count it. */
   qr: number;
   bots: number;
   botUniques: number;
@@ -800,7 +814,8 @@ export interface ShortyInstance {
   ui(opts?: UiOptions): Router;
 
   /**
-   * Build indexes, reconcile the click TTL with `retentionDays`, re-key slugs if
+   * Create every collection and build its indexes (even when empty), reconcile
+   * the click/seen TTLs with config, re-key slugs if
    * `caseSensitive` changed. Idempotent. Await once at boot — traps #3.
    */
   ready(): Promise<void>;
@@ -823,6 +838,7 @@ export interface ShortyInstance {
   link(idOrSlug: string): Promise<Link | null>;
   links(query?: LinksQuery): Promise<LinksPage>;
   history(id: string): Promise<HistoryEntry[]>;
+  /** Unknown `linkId` → `not_found`; missing/invalid `from`/`to` → `validation`. */
   stats(query: StatsQuery): Promise<Stats>;
   paramValues(): Promise<ParamKeyStat[]>;
   tags(): Promise<TagStat[]>;
@@ -842,6 +858,10 @@ export interface ShortyInstance {
 export declare function createShorty(config: CreateShortyConfig): ShortyInstance;
 export default createShorty;
 
+/**
+ * id: `req.authUserId ?? req.user._id ?? req.user.id` (stringified; empty →
+ * null). name: `req.user.name ?? displayName ?? email`.
+ */
 export declare function defaultResolveUser(req: Request): Actor | null;
 export declare function defaultSpaDir(): string;
 
@@ -857,7 +877,10 @@ export type ShortyErrorCode =
   | 'ambiguous_destination'
   | 'host_not_allowed'
   | 'host_blocked'
-  /** The destination is `publicBaseUrl` itself or anything under `publicBaseUrl/`. */
+  /**
+   * The destination is `publicBaseUrl` itself (any query/fragment) or anything
+   * under `publicBaseUrl/`. The host root above a mounted path is not a loop.
+   */
   | 'destination_loop'
   | 'slug_invalid'
   | 'slug_too_long'

@@ -427,3 +427,168 @@ describe('tags()', () => {
     ]);
   });
 });
+
+describe('stats — counting and range edges (audit follow-up)', () => {
+  it('counts clicks, not uniques, in breakdowns (one visitor, three hits → 3)', async () => {
+    const h = await setup();
+    await h.shorty.createLink({ url: 'https://example.com/a', slug: 'same' });
+    for (let i = 0; i < 3; i++) await click(h, 'same', { ip: '198.51.100.7', referer: 'https://news.test/x' });
+    await h.shorty.drain();
+    const link = (await h.shorty.link('same'))!;
+    const s = await h.shorty.stats({ linkId: link.id, from: '2026-03-15', to: '2026-03-15' });
+    expect(row(s.breakdowns.referrer, 'news.test')).toEqual({ key: 'news.test', humans: 3, bots: 0 });
+    expect(s.totals.humans).toMatchObject({ clicks: 3, uniques: 1 });
+  });
+
+  it('excludes a click on the day after `to` from series and breakdowns', async () => {
+    const h = await setup();
+    await h.shorty.createLink({ url: 'https://example.com/a', slug: 'edge' });
+    await click(h, 'edge', { referer: 'https://in.test/' });
+    h.clock.set('2026-03-16T00:30:00.000Z');
+    await click(h, 'edge', { referer: 'https://out.test/' });
+    await h.shorty.drain();
+    const link = (await h.shorty.link('edge'))!;
+    const s = await h.shorty.stats({ linkId: link.id, from: '2026-03-15', to: '2026-03-15' });
+    expect(s.totals.humans.clicks).toBe(1);
+    expect(s.breakdowns.referrer).toEqual([{ key: 'in.test', humans: 1, bots: 0 }]);
+  });
+
+  it('does not count other links in a per-link breakdown', async () => {
+    const h = await setup();
+    await h.shorty.createLink({ url: 'https://example.com/a', slug: 'mine' });
+    await h.shorty.createLink({ url: 'https://example.com/b', slug: 'theirs' });
+    await click(h, 'mine', { referer: 'https://shared.test/' });
+    await click(h, 'theirs', { referer: 'https://shared.test/' });
+    await click(h, 'theirs', { referer: 'https://shared.test/' });
+    await h.shorty.drain();
+    const link = (await h.shorty.link('mine'))!;
+    const s = await h.shorty.stats({ linkId: link.id, from: '2026-03-15', to: '2026-03-15' });
+    expect(s.breakdowns.referrer).toEqual([{ key: 'shared.test', humans: 1, bots: 0 }]);
+  });
+
+  it('applies the clicks.timezone day boundary to breakdowns, not just the series', async () => {
+    const h = await setup({ config: { clicks: { timezone: 'America/New_York' } } });
+    await h.shorty.createLink({ url: 'https://example.com/a', slug: 'nyb' });
+    h.clock.set('2026-03-15T03:00:00.000Z'); // the 14th in New York
+    await click(h, 'nyb', { referer: 'https://late.test/' });
+    h.clock.set('2026-03-15T05:00:00.000Z'); // the 15th in New York
+    await click(h, 'nyb', { referer: 'https://early.test/' });
+    await h.shorty.drain();
+    const link = (await h.shorty.link('nyb'))!;
+    const s = await h.shorty.stats({ linkId: link.id, from: '2026-03-15', to: '2026-03-15' });
+    expect(s.breakdowns.referrer).toEqual([{ key: 'early.test', humans: 1, bots: 0 }]);
+  });
+
+  it('shows a bots-only referrer row, sorted below rows that have humans', async () => {
+    const h = await setup();
+    const link = await h.shorty.createLink({ url: 'https://example.com/a' });
+    const base = { linkId: new Types.ObjectId(link.id), rev: 1, at: h.clock.now, unique: true, qr: false, device: 'desktop' as const };
+    await h.shorty.models.Click.insertMany([
+      { ...base, visitor: 'h1', bot: false, referrerHost: 'people.test' },
+      ...[1, 2, 3].map((i) => ({ ...base, visitor: `b${i}`, bot: true, referrerHost: 'crawler.test' })),
+    ]);
+    const s = await h.shorty.stats({ linkId: link.id, from: '2026-03-15', to: '2026-03-15' });
+    expect(s.breakdowns.referrer).toEqual([
+      { key: 'people.test', humans: 1, bots: 0 },
+      { key: 'crawler.test', humans: 0, bots: 3 },
+    ]);
+  });
+
+  it('accepts exactly 400 days (inclusive) and rejects 401 with range_too_large', async () => {
+    const h = await setup();
+    const ok = await h.shorty.stats({ from: '2025-02-09', to: '2026-03-15' });
+    expect(ok.series).toHaveLength(400);
+    const err = await h.shorty.stats({ from: '2025-02-08', to: '2026-03-15' }).catch((e: unknown) => e);
+    expect((err as ShortyError).code).toBe('range_too_large');
+  });
+
+  it('does not mark breakdowns truncated when `from` is exactly now − retentionDays', async () => {
+    const h = await setup({ config: { clicks: { retentionDays: 30 } } });
+    h.clock.set('2026-03-15T00:00:00.000Z'); // now − 30 d = 2026-02-13T00:00Z
+    expect((await h.shorty.stats({ from: '2026-02-13', to: '2026-02-13' })).breakdownsTruncated).toBe(false);
+    expect((await h.shorty.stats({ from: '2026-02-12', to: '2026-02-12' })).breakdownsTruncated).toBe(true);
+  });
+
+  it('uses 395 retention days for breakdownsTruncated when clicks.retentionDays is unset', async () => {
+    const h = await setup();
+    h.clock.set('2026-03-15T00:00:00.000Z'); // now − 395 d = 2025-02-13T00:00Z
+    expect((await h.shorty.stats({ from: '2025-02-13', to: '2025-02-13' })).breakdownsTruncated).toBe(false);
+    expect((await h.shorty.stats({ from: '2025-02-12', to: '2025-02-12' })).breakdownsTruncated).toBe(true);
+  });
+
+  it('labels a week bucket by its Monday even when `from` is a Wednesday, counting only days in range', async () => {
+    const h = await setup();
+    const link = await h.shorty.createLink({ url: 'https://example.com/a' });
+    await daily(h, link.id, '2026-03-03', { clicks: 100 }); // Tue, before `from`
+    await daily(h, link.id, '2026-03-04', { clicks: 1 }); // Wed = from
+    await daily(h, link.id, '2026-03-10', { clicks: 2 });
+    const s = await h.shorty.stats({ linkId: link.id, from: '2026-03-04', to: '2026-03-15', interval: 'week' });
+    expect(s.series.map((p) => [p.date, p.humans.clicks])).toEqual([['2026-03-02', 1], ['2026-03-09', 2]]);
+  });
+
+  it('labels a month bucket by the 1st even when `from` is mid-month, counting only days in range', async () => {
+    const h = await setup();
+    const link = await h.shorty.createLink({ url: 'https://example.com/a' });
+    await daily(h, link.id, '2026-01-10', { clicks: 100 }); // before `from`
+    await daily(h, link.id, '2026-01-20', { clicks: 1 });
+    await daily(h, link.id, '2026-02-05', { clicks: 2 });
+    await daily(h, link.id, '2026-02-20', { clicks: 100 }); // after `to`
+    const s = await h.shorty.stats({ linkId: link.id, from: '2026-01-15', to: '2026-02-10', interval: 'month' });
+    expect(s.series.map((p) => [p.date, p.humans.clicks])).toEqual([['2026-01-01', 1], ['2026-02-01', 2]]);
+  });
+
+  it('reads Date objects as days in clicks.timezone, not UTC', async () => {
+    const h = await setup({ config: { clicks: { timezone: 'America/New_York' } } });
+    // 02:00Z on the 10th/11th is 22:00 EDT on the 9th/10th.
+    const s = await h.shorty.stats({ from: new Date('2026-03-10T02:00:00Z'), to: new Date('2026-03-11T02:00:00Z') });
+    expect(s.range).toMatchObject({ from: '2026-03-09', to: '2026-03-10', timezone: 'America/New_York' });
+    expect(s.series.map((p) => p.date)).toEqual(['2026-03-09', '2026-03-10']);
+  });
+});
+
+describe('paramValues — freshness and edges (audit follow-up)', () => {
+  it('sets lastUsedAt to the latest updatedAt among links using the value', async () => {
+    const h = await setup();
+    const a = await h.shorty.createLink({ url: 'https://example.com/1?utm_source=ig' });
+    h.clock.advance(60_000);
+    const b = await h.shorty.createLink({ url: 'https://example.com/2?utm_source=ig' });
+    h.clock.advance(60_000);
+    const aEdited = await h.shorty.updateLink(a.id, { title: 'touched' });
+    const expected = Math.max(aEdited.updatedAt.getTime(), b.updatedAt.getTime());
+    const ig = (await h.shorty.paramValues()).find((i) => i.key === 'utm_source')!.values.find((v) => v.value === 'ig')!;
+    expect(ig.lastUsedAt.getTime()).toBe(expected);
+  });
+
+  it('drops a value as soon as an update removes it, and a key as soon as its only link is deleted', async () => {
+    const h = await setup();
+    const a = await h.shorty.createLink({ url: 'https://example.com/1?utm_source=ig' });
+    const b = await h.shorty.createLink({ url: 'https://example.com/2?only=here' });
+    await h.shorty.updateLink(a.id, { utm: { source: 'fb' } });
+    await h.shorty.deleteLink(b.id);
+    const items = await h.shorty.paramValues();
+    expect(items.find((i) => i.key === 'utm_source')!.values.map((v) => v.value)).toEqual(['fb']);
+    expect(items.find((i) => i.key === 'only')).toBeUndefined();
+  });
+
+  it('keeps Facebook and facebook as separate values (the lint flags them; the catalog does not merge)', async () => {
+    const h = await setup();
+    await h.shorty.createLink({ url: 'https://example.com/1?utm_source=Facebook' });
+    await h.shorty.createLink({ url: 'https://example.com/2?utm_source=facebook' });
+    const src = (await h.shorty.paramValues()).find((i) => i.key === 'utm_source')!;
+    expect(src.count).toBe(2);
+    expect(src.values.map((v) => [v.value, v.count]).sort()).toEqual([['Facebook', 1], ['facebook', 1]]);
+  });
+
+  it('reports truncated false at exactly 50 distinct values and true at 51', async () => {
+    const h = await setup();
+    for (let i = 0; i < 50; i++) await h.shorty.createLink({ url: `https://example.com/p?k=v${i}` });
+    const at50 = (await h.shorty.paramValues()).find((i) => i.key === 'k')!;
+    expect(at50.values).toHaveLength(50);
+    expect(at50.truncated).toBe(false);
+    await h.shorty.createLink({ url: 'https://example.com/p?k=v50' });
+    const at51 = (await h.shorty.paramValues()).find((i) => i.key === 'k')!;
+    expect(at51.values).toHaveLength(50);
+    expect(at51.truncated).toBe(true);
+    expect(at51.count).toBe(51);
+  });
+});
