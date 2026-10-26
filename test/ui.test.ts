@@ -28,7 +28,9 @@ describe('SPA serving (§8, traps #8)', () => {
     expect(res.text).toMatch(/npm run build/);
   });
 
-  describe.skipIf(!bundleExists)('against the built bundle', () => {
+  // Skipped locally on a fresh checkout; in CI (which builds first) a missing
+  // bundle must FAIL, not silently skip every injection test.
+  describe.skipIf(!bundleExists && !process.env.CI)('against the built bundle', () => {
     it('injects a <base href> matching the mount path', async () => {
       const { shorty } = await harness();
       const app = express();

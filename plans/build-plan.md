@@ -111,7 +111,8 @@ interface ShortyConfig {
   screenshot?: (url: string) => Promise<{ contentType: string; body: Buffer } | null>
                                          // optional adapter, §4; UI hides the tab when absent
 
-  // hooks — mailery's top-level onX style; all optional, all awaited-and-caught, none can break a redirect
+  // hooks — mailery's top-level onX style; all optional, all awaited-and-caught, none can break a redirect.
+  // Exact event shapes: types/index.d.ts (the contract wins over this sketch).
   onClick?:   (e: ClickEvent) => void | Promise<void>   // after the response is sent; bots included, flagged
   onCreate?:  (e: { link: Link; req? }) => void | Promise<void>
   onUpdate?:  (e: { link: Link; prev: Link; revision?: Revision; req? }) => ...
@@ -289,7 +290,9 @@ rots.
 ```
 GET|HEAD <mount>/<path>
  1. path → candidate slug. Not slug grammar (has '.', empty, too long) → next(), no DB hit
-    (so a root mount never touches /assets/app.js, /favicon.ico, /api/*)
+    (so a root mount never touches /assets/app.js, /favicon.ico). Paths that ARE valid
+    slug grammar (`/api/users`) do get one lookup + a miss row; a root-mounted host
+    that wants none adds `slug.reserved: [/^api(\/|$)/]`.
  2. reserved → next()
  3. findOne({ slugKey }) projecting only redirect fields. Miss → onMiss behavior + misses row
  4. expired (date or clicks ≥ maxClicks) → expiredUrl | onExpired
@@ -326,7 +329,7 @@ Warnings — the bit that makes the form better than Bitly's:
 - `not_ok`: final status ≥ 400; `redirects`: chain length > 1 (suggest final URL)
 - `noindex_destination`, `cloudflare_challenge` (OG unavailable, not broken)
 - `utm_incomplete`: some UTMs set but not source+medium+campaign
-- `near_duplicate_value` (from §7.4)
+- (near-duplicate values are UI lint from the §7.4 catalog, not an inspect warning)
 
 ## 8. UI shape
 

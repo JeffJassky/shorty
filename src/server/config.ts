@@ -228,7 +228,7 @@ export function resolveConfig(config: CreateShortyConfig): ResolvedContext {
       maxRedirects: inspect.maxRedirects ?? 5,
       lookup: inspect.lookup ?? defaultLookup,
       isAllowedAddress: inspect.isAllowedAddress ?? null,
-      userAgent: inspect.userAgent ?? 'shorty-inspect/0 (+link preview)',
+      userAgent: inspect.userAgent ?? 'shorty-inspect (+link preview)',
     },
     screenshot: config.screenshot ?? null,
     hooks: {

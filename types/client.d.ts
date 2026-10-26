@@ -18,7 +18,8 @@ import type {
  * hosts may too.
  *
  * Route table — `routes` answers exactly these, JSON in and out. Errors are
- * `{ error: ShortyErrorCode, ...details }` with the status from `ERROR_STATUS`.
+ * `{ error: ShortyErrorCode, ...details }` with the status from `ERROR_STATUS`;
+ * an unexpected failure is 500 `{ error: 'internal_error' }` (logged).
  *
  *   GET    /links                 ?q&tag&archived&sort&cursor&limit  → LinksPage
  *   POST   /links                 LinkInput                          → { link }      201

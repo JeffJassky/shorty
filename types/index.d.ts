@@ -49,7 +49,9 @@ export type ResolveUser = (req: Request) => Actor | null | undefined;
 
 /**
  * The six recognized UTM fields. Each maps to `utm_<field>` in the query.
- * An empty string is treated as absent everywhere.
+ * An empty string is treated as absent everywhere: `composeUrl` omits it, and
+ * `parseUrl` leaves an empty `utm_x=` in `params` (so nothing is lost) rather
+ * than filling the field.
  */
 export interface Utm {
   source?: string;
@@ -92,7 +94,7 @@ export interface UrlParts {
  * fields are omitted. No `?` when there is no query.
  *
  * Throws `ShortyError('invalid_base_url')` when `baseUrl` is not absolute
- * http(s) or carries a query/fragment, and `ShortyError('invalid_param')` for
+ * http(s), carries credentials, or carries a query/fragment, and `ShortyError('invalid_param')` for
  * an empty param key.
  */
 export declare function composeUrl(parts: UrlParts): string;
@@ -108,8 +110,11 @@ export declare function composeUrl(parts: UrlParts): string;
  * - `composeUrl(parseUrl(u))` equals `u` up to encoding normalization and
  *   UTM-first reordering; `parseUrl(composeUrl(parts))` equals `parts`.
  *
+ * - `baseUrl` is normalized by the URL parser: `https://a.com` → `https://a.com/`.
+ *
  * Throws `ShortyError('invalid_url')` for anything that is not an absolute URL
- * and `ShortyError('unsupported_scheme')` for non-http(s) schemes.
+ * or that carries credentials (`https://google.com@evil.com`), and
+ * `ShortyError('unsupported_scheme')` for non-http(s) schemes.
  */
 export declare function parseUrl(url: string): UrlParts;
 
@@ -127,7 +132,15 @@ export interface SocialCard {
   image?: string;
 }
 
-/** What `inspect` scraped off a destination — raw; fallback text (URL as title) is the UI's job. */
+/**
+ * What `inspect` scraped off a destination — raw; fallback text (URL as title)
+ * is the UI's job. Fallback chains (Dub's, research.md §1):
+ * - title: `og:title` → `twitter:title` → `<title>`
+ * - description: `<meta name=description>` → `og:description` → `twitter:description`
+ * - image: `og:image` → `twitter:image` → `<link rel=image_src>` → `<link rel=icon>`
+ * - favicon: `<link rel=icon>` / `shortcut icon` only — never a guessed `/favicon.ico`
+ * Relative URLs resolve against the FINAL url. Entities are decoded.
+ */
 export interface OgData {
   title?: string;
   description?: string;
@@ -208,6 +221,8 @@ export interface LinkInput {
   maxClicks?: number;
   expiredUrl?: string;
   social?: SocialCard;
+  /** The form passes the `inspect` result it showed; stored with `fetchedAt: now()`. */
+  og?: OgData;
 }
 
 /**
@@ -239,6 +254,7 @@ export interface LinkPatch {
   maxClicks?: number | null;
   expiredUrl?: string | null;
   social?: SocialCard | null;
+  og?: OgData | null;
 }
 
 /** Programmatic calls carry no request; pass the actor explicitly if there is one. */
@@ -312,7 +328,12 @@ export interface Click {
   rev: number;
   at: Date;
   visitor: string;
-  /** First hit for this visitor within `uniqueWindowMinutes`, decided by `at` — never by TTL deletion. */
+  /**
+   * First hit for this visitor within `uniqueWindowMinutes`, decided by `at` —
+   * never by TTL deletion. The window is FIXED from the unique hit (repeats
+   * don't extend it). Humans and bots are separate namespaces: a HEAD prefetch
+   * never consumes the human's unique slot.
+   */
   unique: boolean;
   /** HEAD request, `isbot` user agent, or an EMPTY/absent user agent. */
   bot: boolean;
@@ -352,7 +373,8 @@ export interface BotCounts {
  * Date-only `from`/`to` are calendar days in `clicks.timezone`, BOTH inclusive
  * (03-01..03-15 → 15 day points). Weeks start Monday, labelled by bucket start.
  * Breakdown rows count clicks (not uniques), sorted by humans desc; `top` > 50
- * clamps to 50. `revision` is `[]` in the overview; `topLinks`/`topCampaigns`
+ * clamps to 50. `from` > `to` → `validation`; a range over 400 days (inclusive
+ * day count) → `range_too_large`. `revision` is `[]` in the overview; `topLinks`/`topCampaigns`
  * are absent per-link. `breakdownsTruncated` ⇔ `from` < now − retentionDays.
  */
 export interface StatsQuery {
@@ -465,7 +487,9 @@ export interface InspectWarning {
 
 /**
  * Never throws for network reasons — those are warnings. Throws only for input
- * that isn't a URL (`invalid_url`, `unsupported_scheme`).
+ * that isn't a URL (`invalid_url`, `unsupported_scheme`). Only `text/html`
+ * bodies are scraped; redirect hops to non-http(s) schemes are not followed;
+ * a refused first hop leaves `chain: []` and no `final`.
  */
 export interface InspectResult {
   url: string;
@@ -490,9 +514,9 @@ export interface InspectResult {
  * for anything else — dots, spaces, `?`, `#`, `//`, empty).
  */
 export interface SlugConfig {
-  /** Generated slug length. Default 7. */
+  /** Generated slug length. Default 7; integer 3–190 or createShorty throws. */
   length?: number;
-  /** Generated slug alphabet. Default `'23456789abcdefghjkmnpqrstuvwxyz'`. */
+  /** Generated slug alphabet. Default `'23456789abcdefghjkmnpqrstuvwxyz'` (no 0 1 i l o); ≥ 2 distinct chars. */
   alphabet?: string;
   /** Overrides length/alphabet. Output is still validated and collision-checked. */
   generate?: () => string;
@@ -549,9 +573,9 @@ export interface GeoResult {
 }
 
 export interface ClickConfig {
-  /** Raw click TTL. Default 395 (13 months). Daily rollups are kept forever. */
+  /** Raw click TTL. Default 395 (13 months); must be > 0. Daily rollups are kept forever (no TTL). */
   retentionDays?: number;
-  /** Unique-visitor window. Default 60. */
+  /** Unique-visitor window. Default 60; must be > 0. */
   uniqueWindowMinutes?: number;
   /** IANA zone for rollup days. Default `'UTC'`. */
   timezone?: string;
@@ -565,7 +589,7 @@ export interface ClickConfig {
 }
 
 export interface InspectConfig {
-  /** Whole-inspect budget. Default 5000. */
+  /** Whole-inspect budget, covering DNS, every hop, and the screenshot adapter. Default 5000. */
   timeoutMs?: number;
   /** Body bytes read. Default 2_000_000; reading also stops at `</head>`. */
   maxBytes?: number;
@@ -579,10 +603,15 @@ export interface InspectConfig {
    * an intranet deployment that previews internal destinations.
    */
   isAllowedAddress?: (ip: string) => boolean;
-  /** Default `'shorty-inspect/<version> (+link preview)'`. */
+  /** Default `'shorty-inspect (+link preview)'`. */
   userAgent?: string;
 }
 
+/**
+ * Called once per inspect with the FINAL url, only when the safe fetch reached
+ * it (never for a private/blocked or unreachable destination). A throw or a
+ * null → no screenshot; never fails the inspect.
+ */
 export type ScreenshotAdapter = (url: string) => Promise<{ contentType: string; body: Buffer } | null>;
 
 /** Structurally a `@jeffjassky/telemetry` client's `track`. No-op by default. */
@@ -638,7 +667,11 @@ export interface CreateShortyConfig {
 
   // Hooks — awaited, caught, logged, counted in `health().hookFailures`. None can
   // fail a write or a redirect.
-  /** After the redirect response is sent. Bots included, flagged — a crawler served the social card is a bot click. */
+  /**
+   * After the redirect response is sent. Bots included, flagged — a crawler
+   * served the social card is a bot click. Not called when recording is off
+   * (`clicks: false` / no pepper) or the hit was expired: no click exists.
+   */
   onClick?: (e: ClickEvent) => void | Promise<void>;
   onCreate?: (e: { link: Link; actor?: Actor; req?: Request }) => void | Promise<void>;
   onUpdate?: (e: { link: Link; prev: Link; history: HistoryEntry[]; actor?: Actor; req?: Request }) => void | Promise<void>;
@@ -753,7 +786,13 @@ export interface ShortyHealth {
 }
 
 export interface ShortyInstance {
-  /** PUBLIC. GET/HEAD only; anything that isn't a known slug → `onMiss` (default `next()`). */
+  /**
+   * PUBLIC. GET/HEAD only. The path is percent-decoded; a malformed escape,
+   * empty path, `//`, dot, over-long or reserved path is not a slug → `next()`
+   * with no lookup. An unknown valid slug → `onMiss` (default `next()`). An
+   * expired hit records no click. A lookup failure (DB down) → `next(err)` —
+   * the host's error handler answers; the request never hangs.
+   */
   redirect: Router;
   /** ADMIN JSON API. The host guards it; shorty does not. Host supplies `express.json()`. */
   routes: Router;
