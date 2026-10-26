@@ -1,9 +1,16 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import type http from 'node:http';
+import https from 'node:https';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import type { AddressInfo } from 'node:net';
 import { ShortyError } from '../src/shared/errors.js';
 import type { InspectConfig, InspectResult, InspectWarningCode, ScreenshotAdapter } from '../types/index.js';
 import { allowLoopback, harness, page, redirectTo, startSite, startDb, stopDb } from './helpers.js';
 import type { Site, SiteHandler } from './helpers.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /**
  * `shorty.inspect(url)` — OG preview + destination health (§7.6, research.md
@@ -766,5 +773,120 @@ describe('inspect — budget and body handling (audit follow-up)', () => {
     });
     await (await local()).inspect(`${s.origin}/ua`);
     expect(ua).toBe('shorty-inspect (+link preview)');
+  });
+});
+
+describe('inspect — PR 3 review follow-ups', () => {
+  // v6 forms that embed or stand in for a non-public v4 / non-public v6 space.
+  it.each([
+    ['2002:7f00:1::', '6to4 of 127.0.0.1'],
+    ['2002:a00:5::', '6to4 of 10.0.0.5'],
+    ['2001:0::1', 'Teredo'],
+    ['64:ff9b::7f00:1', 'NAT64 of 127.0.0.1'],
+    ['64:ff9b:1::a00:5', 'local-use NAT64 64:ff9b:1::/48'],
+    ['::7f00:1', 'deprecated v4-compatible ::127.0.0.1'],
+    ['fec0::1', 'site-local'],
+    ['100::1', 'discard-only 100::/64'],
+  ])('refuses a hostname that resolves to %s (%s)', async (addr) => {
+    const s = await site({ '/': page('<title>SECRET</title>') });
+    const shorty = await inspector({ lookup: async () => [addr] });
+    const r = await shorty.inspect(`http://sneaky.test:${s.port}/`);
+    expect(codes(r)).toContain('private_address');
+    expect(s.hits).toEqual([]);
+  });
+
+  it('does not connect when the isAllowedAddress override throws', async () => {
+    const s = await site({ '/': page('<title>SECRET</title>') });
+    const shorty = await inspector({
+      lookup: async () => ['127.0.0.1'],
+      isAllowedAddress: () => { throw new Error('policy bug'); },
+    });
+    const r = await shorty.inspect(`http://x.test:${s.port}/`);
+    expect(codes(r)).toContain('private_address');
+    expect(s.hits).toEqual([]);
+  });
+
+  it.each(['apple-touch-icon', 'mask-icon', 'icon-x'])('does not treat rel="%s" as a favicon or image', async (rel) => {
+    const s = await site({ '/': page(`<title>T</title><link rel="${rel}" href="/a.png">`) });
+    const r = await (await local()).inspect(`${s.origin}/`);
+    expect(r.og.favicon).toBeUndefined();
+    expect(r.og.image).toBeUndefined();
+  });
+
+  it('does not stop reading at a </head> or <body inside a head <script> or comment', async () => {
+    // Two chunks with a pause, so a reader that stops at the first raw
+    // `</head` / `<body` byte sequence really does stop before the og tag.
+    const s = await site({
+      '/': (_req, res) => {
+        res.setHeader('content-type', 'text/html');
+        res.write(`<!doctype html><html><head><script>var a = '</head><body>';</script><!-- <body> </head> -->`);
+        setTimeout(() => res.end('<meta property="og:title" content="After the decoys"></head><body></body></html>'), 150);
+      },
+    });
+    const r = await (await local()).inspect(`${s.origin}/`);
+    expect(r.og.title).toBe('After the decoys');
+  });
+
+  it.each([
+    [{ contentType: 123, body: 'x' }],
+    [{ contentType: null, body: null }],
+    [{}],
+    ['not an object'],
+  ])('does not reject when the screenshot adapter returns garbage (%j)', async (garbage) => {
+    const s = await site({ '/': page('<title>T</title>') });
+    const shot = (async () => garbage) as unknown as ScreenshotAdapter;
+    const shorty = await inspector({ isAllowedAddress: allowLoopback }, { screenshot: shot });
+    const r = await shorty.inspect(`${s.origin}/`);
+    expect(r.og.title).toBe('T');
+    expect(r.screenshot).toBeUndefined();
+  });
+
+  describe('over https', () => {
+    const tls = {
+      key: fs.readFileSync(path.join(__dirname, 'fixtures/tls-key.pem')),
+      cert: fs.readFileSync(path.join(__dirname, 'fixtures/tls-cert.pem')),
+    };
+    let server: https.Server | undefined;
+    afterEach(async () => {
+      await new Promise<void>((resolve) => (server ? server.close(() => resolve()) : resolve()));
+      server = undefined;
+    });
+
+    async function startTls(): Promise<{ port: number; snis: string[]; connections: () => number }> {
+      const snis: string[] = [];
+      let connections = 0;
+      server = https.createServer({
+        ...tls,
+        SNICallback: (name, cb) => { snis.push(name); cb(null, tlsContext); },
+      }, (_req, res) => { res.setHeader('content-type', 'text/html'); res.end('<title>TLS</title>'); });
+      const tlsContext = (await import('node:tls')).createSecureContext(tls);
+      server.on('connection', () => { connections += 1; });
+      await new Promise<void>((resolve) => server!.listen(0, '127.0.0.1', resolve));
+      return { port: (server!.address() as AddressInfo).port, snis, connections: () => connections };
+    }
+
+    it('connects to the checked address with the hostname as SNI, resolving once', async () => {
+      const t = await startTls();
+      let lookups = 0;
+      const shorty = await inspector({
+        isAllowedAddress: allowLoopback,
+        lookup: async () => { lookups += 1; return ['127.0.0.1']; },
+      });
+      // The fixture cert is self-signed, so verification fails → 'unreachable'.
+      // What matters: the TLS handshake reached the CHECKED address and named
+      // the original host, and DNS ran exactly once.
+      const r = await shorty.inspect(`https://public.test:${t.port}/`);
+      expect(t.snis).toEqual(['public.test']);
+      expect(lookups).toBe(1);
+      expect(codes(r)).toContain('unreachable');
+    });
+
+    it('does not open a TLS connection to a private address', async () => {
+      const t = await startTls();
+      const shorty = await inspector({ lookup: async () => ['127.0.0.1'] });
+      const r = await shorty.inspect(`https://public.test:${t.port}/`);
+      expect(codes(r)).toContain('private_address');
+      expect(t.connections()).toBe(0);
+    });
   });
 });
