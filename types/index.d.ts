@@ -272,7 +272,7 @@ export interface LinksQuery {
   /** `false` (default) hides archived; `true` shows only archived; `'all'` both. */
   archived?: boolean | 'all';
   sort?: 'newest' | 'clicks' | 'lastClicked';
-  /** Opaque, from a previous page's `nextCursor`. */
+  /** Opaque, from a previous page's `nextCursor`. Anything else → `validation`, never a 500. */
   cursor?: string;
   /** Clamped to `listLimit`. */
   limit?: number;

@@ -1369,3 +1369,16 @@ describe('ERROR_STATUS / ShortyError', () => {
     expect(new ShortyError('validation', 418).status).toBe(418);
   });
 });
+
+describe('links() — cursor input', () => {
+  it('does not 500 on a cursor it never issued', async () => {
+    const h = await harness();
+    await h.shorty.createLink({ url: 'https://acme.com/a' });
+    // `bnVsbA` is base64url("null"); the others are garbage and a valid-JSON
+    // object with none of the cursor's fields.
+    const bad = ['bnVsbA', 'not a cursor!!', Buffer.from('{}').toString('base64url'), Buffer.from('[1]').toString('base64url')];
+    for (const cursor of bad) {
+      await expect(h.shorty.links({ cursor })).rejects.toMatchObject({ code: 'validation' });
+    }
+  });
+});
