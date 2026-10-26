@@ -398,14 +398,25 @@ export function createLinkService(ctx: ResolvedContext, slugs: SlugService, hook
   }
 
   async function deleteLink(id: string, call?: CallContext): Promise<DeleteSummary> {
-    const doc = await requireDoc(id);
-    const linkId = doc._id;
     const actor = actorOf(call);
-    // The link goes first: from this moment nothing redirects or counts.
-    const removed = await LinkModel.deleteOne({ _id: linkId });
-    if (removed.deletedCount === 0) throw notFound(id);
-    const [keys, history, clicks] = await Promise.all([
-      Slug.deleteMany({ linkId }),
+    const doc = await findDoc(id);
+    let link: Link | null = null;
+    if (doc) {
+      // The link goes first: from this moment nothing redirects or counts.
+      const removed = await LinkModel.deleteOne({ _id: doc._id });
+      if (removed.deletedCount === 0 && !(await Slug.exists({ linkId: doc._id }))) throw notFound(id);
+      link = toLink(ctx, doc);
+    } else if (typeof id === 'string' && OBJECT_ID.test(id)) {
+      // A retry after a partial failure: the Link is gone but its rows may remain.
+      if (!(await Slug.exists({ linkId: id }))) throw notFound(id);
+    } else {
+      throw notFound(String(id));
+    }
+    const linkId = new Types.ObjectId(id);
+    // Slug claims next, awaited on their own: a failure here surfaces, and a
+    // retry (Link gone, claims left) finishes the cleanup.
+    const keys = await Slug.deleteMany({ linkId });
+    const [history, clicks] = await Promise.all([
       History.deleteMany({ linkId }),
       Click.deleteMany({ linkId }),
       Daily.deleteMany({ linkId }),
@@ -414,9 +425,11 @@ export function createLinkService(ctx: ResolvedContext, slugs: SlugService, hook
     const summary: DeleteSummary = {
       clicks: clicks.deletedCount, history: history.deletedCount, keys: keys.deletedCount,
     };
-    const link = toLink(ctx, doc);
-    await hooks.hook('onDelete', { link, summary, ...extras(actor, call?.req) });
-    await hooks.track('shorty.link_deleted', link.id);
+    // A retry has no Link left to hand to the hooks.
+    if (link) {
+      await hooks.hook('onDelete', { link, summary, ...extras(actor, call?.req) });
+      await hooks.track('shorty.link_deleted', link.id);
+    }
     return summary;
   }
 
@@ -438,16 +451,19 @@ export function createLinkService(ctx: ResolvedContext, slugs: SlugService, hook
 
   function decodeCursor(raw: string, sort: LinkSort): Cursor {
     const invalid = new ShortyError('validation', undefined, { field: 'cursor' });
-    let c: Cursor;
+    let parsed: unknown;
     try {
-      c = JSON.parse(Buffer.from(raw, 'base64url').toString('utf8')) as Cursor;
+      parsed = JSON.parse(Buffer.from(raw, 'base64url').toString('utf8'));
     } catch {
       throw invalid;
     }
+    // Shape first: `null`, arrays and bare objects must not reach the field reads.
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) throw invalid;
+    const c = parsed as Cursor;
     const valueOk = c.v === null ? sort === 'lastClicked'
       : sort === 'clicks' ? typeof c.v === 'number' && Number.isFinite(c.v)
         : typeof c.v === 'string' && !Number.isNaN(new Date(c.v).getTime());
-    if (!c || c.s !== sort || typeof c.i !== 'string' || !OBJECT_ID.test(c.i) || !valueOk) throw invalid;
+    if (c.s !== sort || typeof c.i !== 'string' || !OBJECT_ID.test(c.i) || !valueOk) throw invalid;
     return c;
   }
 

@@ -41,6 +41,11 @@ export function createLifecycle(ctx: ResolvedContext): Lifecycle {
     [models.Miss, 'shorty_miss_ttl', MISS_TTL_SECONDS],
   ];
 
+  function isTtlConflict(model: AnyModel, err: unknown): boolean {
+    const ttlName = ttls.find(([m]) => m === model)?.[1];
+    return !!ttlName && INDEX_CONFLICT.includes(codeOf(err) ?? 0) && String((err as Error).message).includes(ttlName);
+  }
+
   async function ensureCollection(model: AnyModel): Promise<void> {
     try {
       await model.createCollection();
@@ -48,8 +53,13 @@ export function createLifecycle(ctx: ResolvedContext): Lifecycle {
       if (codeOf(err) !== NAMESPACE_EXISTS) throw err;
     }
     // Mongoose may already be building indexes in the background (autoIndex).
-    // Let that settle; a conflict it hit is dealt with below.
-    await model.init().catch(() => undefined);
+    // Let that settle. Only the TTL conflict `reconcileTtls` repairs is
+    // tolerated; anything else is a real failure and propagates.
+    try {
+      await model.init();
+    } catch (err) {
+      if (!isTtlConflict(model, err)) throw err;
+    }
   }
 
   async function reconcileTtls(): Promise<void> {
@@ -71,8 +81,7 @@ export function createLifecycle(ctx: ResolvedContext): Lifecycle {
       // A model compiled earlier in this process keeps its first TTL, which
       // `reconcileTtls` has since changed on the server. That is the only
       // conflict expected here, and the server already holds the right value.
-      const ttlName = ttls.find(([m]) => m === model)?.[1];
-      if (ttlName && INDEX_CONFLICT.includes(codeOf(err) ?? 0) && String((err as Error).message).includes(ttlName)) return;
+      if (isTtlConflict(model, err)) return;
       throw err;
     }
   }
