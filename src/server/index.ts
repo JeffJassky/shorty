@@ -2,11 +2,13 @@ import express from 'express';
 import type { Router } from 'express';
 import type { CreateShortyConfig, Link, ShortyInstance, UiOptions } from '../../types/index.js';
 import { resolveConfig } from './config.js';
+import { createClickService } from './clicks.js';
 import { notImplemented } from './errors.js';
 import { createCounters, snapshotHealth } from './counters.js';
 import { createHooks } from './hooks.js';
 import { createLifecycle } from './lifecycle.js';
 import { createLinkService } from './links.js';
+import { createRedirect } from './redirect.js';
 import { createSlugService } from './slug.js';
 import { createUiRouter, defaultSpaDir } from './ui.js';
 
@@ -32,9 +34,11 @@ export { defaultSpaDir };
  */
 export function createShorty(config: CreateShortyConfig): ShortyInstance {
   const ctx = resolveConfig(config);
-  const counters = createCounters();           // PR 2 increments these from the click pipeline
+  const counters = createCounters();           // incremented by hooks and the redirect/click pipelines
   const slugs = createSlugService(ctx);
-  const service = createLinkService(ctx, slugs, createHooks(ctx, counters));
+  const hooks = createHooks(ctx, counters);
+  const service = createLinkService(ctx, slugs, hooks);
+  const redirect = createRedirect(ctx, slugs, createClickService(ctx, hooks, counters), counters);
   const lifecycle = createLifecycle(ctx);
 
   const stubRouter = (): Router => {
@@ -44,12 +48,12 @@ export function createShorty(config: CreateShortyConfig): ShortyInstance {
   };
 
   return {
-    redirect: express.Router(),   // PR 2 — until then every path falls through
+    redirect: redirect.router,
     routes: stubRouter(),         // PR 4
     ui: (opts?: UiOptions) => createUiRouter(ctx, { ...ctx.ui, ...opts }),
 
     ready: lifecycle.ready,
-    drain: async () => notImplemented('drain'),   // PR 2
+    drain: redirect.drain,
     health: () => snapshotHealth(counters, ctx.clicks.enabled),
 
     createLink: service.createLink,
