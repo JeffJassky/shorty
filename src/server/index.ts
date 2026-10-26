@@ -1,64 +1,69 @@
+import express from 'express';
+import type { Router } from 'express';
+import type { CreateShortyConfig, Link, ShortyInstance, UiOptions } from '../../types/index.js';
 import { resolveConfig } from './config.js';
-import { createRoutes, createAdminRoutes } from './routes/index.js';
-import { createPublicUiRouter, createAdminUiRouter, defaultSpaDir } from './ui.js';
-import type {
-  PurgeSummary,
-  UiOptions,
-  CreateShortyConfig,
-  ShortyInstance,
-} from '../../types/index.js';
-import type { PackageUser } from '../../types/index.js';
+import { notImplemented } from './errors.js';
+import { createUiRouter, defaultSpaDir } from './ui.js';
 
-export { defaultResolveUser, createUserAdapter } from './config.js';
-export { createLinkModel, buildLinkSchema } from './model-factory.js';
-export { HttpError } from './errors.js';
+export { defaultResolveUser } from './config.js';
+export { ShortyError, ERROR_STATUS } from './errors.js';
+export { composeUrl, parseUrl } from '../shared/url.js';
 export { defaultSpaDir };
 
 /**
- * Shorty — the package factory.
+ * Shorty — returns routers the host mounts and a programmatic API. Never an
+ * app, never a server.
  *
- * Returns routers the host mounts. Never an app, never a server.
+ *   const shorty = createShorty({ connection: mongoose, publicBaseUrl: 'https://acme.com/go' });
+ *   await shorty.ready();
  *
- *   const pkg = createShorty({ connection: mongoose, resolveUser });
+ *   app.use(express.json());                                 // the host's job
+ *   app.use('/go', shorty.redirect);                         // public; any path, any order
+ *   app.use('/api/shorty', requireAdmin, shorty.routes);
+ *   app.use('/shorty', requireAdmin, shorty.ui());
  *
- *   app.use(express.json());                        // the host's job, not ours
- *   app.use('/api/shorty', requireAuth, pkg.routes);
- *   app.use('/shorty',    requireAuth, pkg.ui({ mountPath: '/shorty' }));
- *
- *   app.use('/api/shorty/admin', requireAuth, requireAdmin, pkg.adminRoutes);
- *   app.use('/admin/shorty',    requireAuth, requireAdmin,
- *           pkg.adminUi({ mountPath: '/admin/shorty' }));
- *
- * The return type is the hand-written `ShortyInstance` from `types/`, not an
- * inferred shape. That is deliberate: annotating it here makes `tsc` fail when
- * the source grows a method the published declarations don't mention, which is
- * the exact drift `types/test-d.ts` exists to catch. See standards/traps.md #9.
+ * CONTRACT STAGE (PR 0): the shape is final; the bodies throw. See
+ * plans/work-breakdown.md for which PR fills which stub.
  */
-export function createShorty(config: CreateShortyConfig = {}): ShortyInstance {
+export function createShorty(config: CreateShortyConfig): ShortyInstance {
   const ctx = resolveConfig(config);
 
-  return {
-    /** The Mongoose model. Exposed so hosts can `await model.createIndexes()`. */
-    model: ctx.Model,
-    /** Public JSON API. */
-    routes: createRoutes(ctx),
-    /** Admin JSON API. The host guards it — this router does not. */
-    adminRoutes: createAdminRoutes(ctx),
-    /** Public SPA router. */
-    ui: (opts?: UiOptions) => createPublicUiRouter(opts),
-    /** Admin SPA router. */
-    adminUi: (opts?: UiOptions) => createAdminUiRouter(opts),
+  const stubRouter = (): Router => {
+    const r = express.Router();
+    r.use((_req, res) => { res.status(501).json({ error: 'not_implemented' }); });
+    return r;
+  };
 
-    /**
-     * Outbound adapter direction: the host tells us a user is gone.
-     *
-     * We store references into a user system we do not own, and nothing else
-     * will ever clean them up. Repair every derived value this touches, and
-     * make it idempotent — it will be called twice.
-     */
-    async purgeUser(userId: PackageUser['id']): Promise<PurgeSummary> {
-      const { deletedCount = 0 } = await ctx.Model.deleteMany({ userId });
-      return { removed: deletedCount };
-    },
+  return {
+    redirect: express.Router(),   // PR 2 — until then every path falls through
+    routes: stubRouter(),         // PR 4
+    ui: (opts?: UiOptions) => createUiRouter(ctx, { ...ctx.ui, ...opts }),
+
+    ready: async () => notImplemented('ready'),
+    drain: async () => notImplemented('drain'),
+    health: () => notImplemented('health'),
+
+    createLink: async () => notImplemented('createLink'),
+    updateLink: async () => notImplemented('updateLink'),
+    archiveLink: async () => notImplemented('archiveLink'),
+    unarchiveLink: async () => notImplemented('unarchiveLink'),
+    deleteLink: async () => notImplemented('deleteLink'),
+
+    link: async () => notImplemented('link'),
+    links: async () => notImplemented('links'),
+    history: async () => notImplemented('history'),
+    stats: async () => notImplemented('stats'),
+    paramValues: async () => notImplemented('paramValues'),
+    tags: async () => notImplemented('tags'),
+    checkSlug: async () => notImplemented('checkSlug'),
+    generateSlug: async () => notImplemented('generateSlug'),
+    inspect: async () => notImplemented('inspect'),
+    shortUrl: (linkOrSlug: Link | string) =>
+      `${ctx.publicBaseUrl}/${typeof linkOrSlug === 'string' ? linkOrSlug : linkOrSlug.slug}`,
+    recount: async () => notImplemented('recount'),
+
+    models: ctx.models,
   };
 }
+
+export default createShorty;
