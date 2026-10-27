@@ -1,16 +1,17 @@
-import express from 'express';
 import type { Router } from 'express';
 import type { CreateShortyConfig, Link, ShortyInstance, UiOptions } from '../../types/index.js';
 import { resolveConfig } from './config.js';
 import { createClickService } from './clicks.js';
-import { notImplemented } from './errors.js';
 import { createCounters, snapshotHealth } from './counters.js';
 import { createHooks } from './hooks.js';
 import { createInspect } from './inspect/index.js';
+import { createParamValues } from './params.js';
 import { createLifecycle } from './lifecycle.js';
 import { createLinkService } from './links.js';
 import { createRedirect } from './redirect.js';
+import { createRoutes } from './routes.js';
 import { createSlugService } from './slug.js';
+import { createStats } from './stats.js';
 import { createUiRouter, defaultSpaDir } from './ui.js';
 
 export { defaultResolveUser } from './config.js';
@@ -29,9 +30,6 @@ export { defaultSpaDir };
  *   app.use('/go', shorty.redirect);                         // public; any path, any order
  *   app.use('/api/shorty', requireAdmin, shorty.routes);
  *   app.use('/shorty', requireAdmin, shorty.ui());
- *
- * The shape is final; the bodies still marked `notImplemented` belong to later
- * PRs — see plans/work-breakdown.md.
  */
 export function createShorty(config: CreateShortyConfig): ShortyInstance {
   const ctx = resolveConfig(config);
@@ -42,15 +40,9 @@ export function createShorty(config: CreateShortyConfig): ShortyInstance {
   const redirect = createRedirect(ctx, slugs, createClickService(ctx, hooks, counters), counters);
   const lifecycle = createLifecycle(ctx);
 
-  const stubRouter = (): Router => {
-    const r = express.Router();
-    r.use((_req, res) => { res.status(501).json({ error: 'not_implemented' }); });
-    return r;
-  };
-
-  return {
+  const instance: ShortyInstance = {
     redirect: redirect.router,
-    routes: stubRouter(),         // PR 4
+    routes: undefined as unknown as Router,   // set below — the router calls back into this instance
     ui: (opts?: UiOptions) => createUiRouter(ctx, { ...ctx.ui, ...opts }),
 
     ready: lifecycle.ready,
@@ -66,8 +58,8 @@ export function createShorty(config: CreateShortyConfig): ShortyInstance {
     link: service.link,
     links: service.links,
     history: service.history,
-    stats: async () => notImplemented('stats'),   // PR 4
-    paramValues: async () => notImplemented('paramValues'),   // PR 4
+    stats: createStats(ctx),
+    paramValues: createParamValues(ctx),
     tags: service.tags,
     checkSlug: service.checkSlug,
     generateSlug: service.generateSlug,
@@ -78,6 +70,8 @@ export function createShorty(config: CreateShortyConfig): ShortyInstance {
 
     models: ctx.models,
   };
+  instance.routes = createRoutes(ctx, instance);
+  return instance;
 }
 
 export default createShorty;
