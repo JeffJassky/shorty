@@ -94,8 +94,10 @@ weakened/skipped · untested paths added · docs/CHANGELOG · `console.log`/TODO
 
 ## PR 5 — SPA: list, create/edit form, anatomy, previews
 
-- **Files:** `src/ui/**`. Copy (do not import) mailery's tokens, `Tip` +
-  `place-tip`, icons, shell; accent swap to teal per plan §8.
+- **Spec:** [ui-spec.md](./ui-spec.md) §0–2, §4–8 — every screen, copy line,
+  tooltip and test is settled there.
+- **Files:** `src/ui/**`, `test/e2e/**`. Copy (do not import) mailery's tokens,
+  `Tip` + `place-tip`, icons; accent swap to teal per plan §8.
 - **Tests:** Playwright happy paths (create auto/custom slug, paste URL splits
   into fields, combobox suggestions, rename confirm per mode, archive).
 - **Non-goals:** analytics screens.
