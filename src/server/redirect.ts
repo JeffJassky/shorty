@@ -21,8 +21,6 @@ export interface RedirectService {
   drain(): Promise<void>;
 }
 
-const LONE_PERCENT = /%(?![0-9A-Fa-f]{2})/g;
-const LONE_MARK = '__shorty_pct__';
 const CACHE_CONTROL = 'private, max-age=0';
 
 interface IncomingPart {
@@ -32,14 +30,6 @@ interface IncomingPart {
   encoded: string;
 }
 
-function safeDecode(value: string): string {
-  try {
-    return decodeURIComponent(value.replace(/\+/g, ' '));
-  } catch {
-    return value;
-  }
-}
-
 /** Decoded text, or null when the escapes are malformed. */
 function tryDecode(value: string): string | null {
   try {
@@ -47,6 +37,11 @@ function tryDecode(value: string): string | null {
   } catch {
     return null;
   }
+}
+
+/** Anything outside printable ASCII is percent-encoded (UTF-8); everything else is sent as built. */
+function headerSafe(url: string): string {
+  return url.replace(/[^\x21-\x7e]+/gu, (run) => encodeURIComponent(run).replace(/[!'()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`));
 }
 
 const MAX_QUERY_KEYS = 20;
@@ -101,7 +96,8 @@ export function forwardQuery(destination: string, incoming: IncomingPart[]): str
   const replaced = new Set(forwarded.map((p) => p.key));
   const kept = existing.filter((piece) => {
     const eq = piece.indexOf('=');
-    return !replaced.has(safeDecode(eq < 0 ? piece : piece.slice(0, eq)));
+    const rawKey = eq < 0 ? piece : piece.slice(0, eq);
+    return !replaced.has(tryDecode(rawKey) ?? rawKey);
   });
   const query = [...kept, ...forwarded.map((p) => p.encoded)].join('&');
   return `${base}?${query}${hash}`;
@@ -184,9 +180,8 @@ export function createRedirect(
   function redirectTo(res: Response, status: number, location: string, vary = false): void {
     headers(res, status === 302 || status === 307, vary);
     res.status(status);
-    // Express's encodeUrl turns a lone `%` into `%25`; a malformed escape must forward verbatim.
-    res.location(location.replace(LONE_PERCENT, LONE_MARK));
-    res.setHeader('Location', String(res.getHeader('Location')).split(LONE_MARK).join('%'));
+    // Not res.location(): it re-encodes, and a malformed escape must forward verbatim.
+    res.setHeader('Location', headerSafe(location));
     res.end();
   }
 
@@ -213,10 +208,19 @@ export function createRedirect(
   function lookup(key: string): Promise<LinkDoc | null> {
     if (Link.db.readyState !== 1) return Promise.reject(new Error('shorty: database connection is not ready'));
     return new Promise<LinkDoc | null>((resolve, reject) => {
+      const timeoutMs = ctx.redirect.lookupTimeoutMs;
       const timer = setTimeout(() => {
-        reject(new Error(`shorty: link lookup timed out after ${ctx.redirect.lookupTimeoutMs}ms`));
-      }, ctx.redirect.lookupTimeoutMs);
-      Promise.resolve(Link.findOne({ keys: key }).lean().exec()).then(
+        reject(new Error(`shorty: link lookup timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+      let pending: Promise<unknown>;
+      try {
+        pending = Promise.resolve(Link.findOne({ keys: key }).maxTimeMS(timeoutMs).lean().exec());
+      } catch (err) {
+        clearTimeout(timer);
+        reject(err);
+        return;
+      }
+      pending.then(
         (found) => { clearTimeout(timer); resolve(found as LinkDoc | null); },
         (err: unknown) => { clearTimeout(timer); reject(err); },
       );
@@ -279,7 +283,9 @@ export function createRedirect(
       bot: isBotHit(req.method, ua),
       ua,
       qr: incoming.some((p) => p.key === 'qr' && p.value === '1'),
-      queryKeys: [...new Set(incoming.map((p) => p.key).filter((k) => k !== 'qr').map((k) => k.slice(0, MAX_QUERY_KEY_LENGTH)))].slice(0, MAX_QUERY_KEYS),
+      queryKeys: [...new Set(
+        incoming.filter((p) => p.key !== 'qr').map((p) => p.key.slice(0, MAX_QUERY_KEY_LENGTH)),
+      )].slice(0, MAX_QUERY_KEYS),
     };
     track(sent(res), () => clicks.record(input));
   }
