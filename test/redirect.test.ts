@@ -763,6 +763,8 @@ describe('End review (a) follow-ups', () => {
     it('waits out mongoose buffering (~10 s) when the connection never opened, instead of next(err) at once', async () => {
       const conn = mongoose.createConnection('mongodb://127.0.0.1:1/shorty-unreachable', { serverSelectionTimeoutMS: 30_000 });
       conn.on('error', () => {});
+      // mongoose 7 rejects the initial connect promise; nobody else awaits it.
+      conn.asPromise().catch(() => undefined);
       const shorty = createShorty({
         connection: conn, publicBaseUrl: 'http://short.test/go', pepper: 'p',
         modelPrefix: 'Unreachable', collectionPrefix: 'unreachable_',

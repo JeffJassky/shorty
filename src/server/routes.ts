@@ -31,8 +31,16 @@ function num(value: unknown, field: string): number | undefined {
   return n;
 }
 
-/** The JSON body, or `{}` when the host mounted no parser. Non-objects are not bodies. */
+/**
+ * The JSON body, or undefined when the request carried none. Express 4's
+ * json parser sets `req.body = {}` even for an empty request (Express 5 leaves
+ * it undefined), so "was there a body" is decided from the headers, not from
+ * `req.body`. Non-objects are not bodies.
+ */
 function bodyOf(req: Request): Record<string, unknown> | undefined {
+  const len = req.headers['content-length'];
+  const sent = req.headers['transfer-encoding'] !== undefined || (len !== undefined && len !== '0');
+  if (!sent) return undefined;
   const b: unknown = req.body;
   return b && typeof b === 'object' && !Array.isArray(b) ? (b as Record<string, unknown>) : undefined;
 }
