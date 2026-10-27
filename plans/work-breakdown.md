@@ -113,3 +113,49 @@ weakened/skipped · untested paths added · docs/CHANGELOG · `console.log`/TODO
 2. Safe-fetch SSRF.
 3. Rename modes + slug claims under concurrency, revisions, human/bot counter
    integrity.
+
+## PR 8 — hot-path hardening (from end review (a))
+
+- **Files:** `src/server/redirect.ts`, `src/server/clicks.ts`. Nothing else —
+  `config.ts` already resolves and validates `redirect.lookupTimeoutMs`,
+  `clicks.maxInFlight`, `onMiss` / `onExpired` (on `ctx.redirect` /
+  `ctx.clicks`), and `counters.ts` already carries `dropped` through
+  `health()`; nothing increments it yet.
+- **Deps:** none.
+- **Contract:** `types/index.d.ts` — `RedirectConfig.lookupTimeoutMs`,
+  `RedirectConfig.forwardQuery` (malformed escapes verbatim),
+  `ClickConfig.maxInFlight`, `ShortyHealth.dropped`, `Click.queryKeys` (cap),
+  `ShortyInstance.redirect` (lookup budget; `Vary` / `Cache-Control` rules).
+- **Tests green:** the `End review (a) follow-ups` describes in
+  `test/redirect.test.ts` and `test/clicks.test.ts` (16 red today); every
+  other test stays green. The `test/config.test.ts` follow-ups are already
+  green.
+- **What to build:**
+  1. *Lookup budget.* Before querying, if `ctx.models.Link.db.readyState !== 1`
+     → `next(new Error(...))` at once. Otherwise race the `findOne` against
+     `ctx.redirect.lookupTimeoutMs`; on timeout `next(err)` with a plain
+     `Error` (not a `ShortyError`). Clear the timer when the lookup wins. A
+     lookup that settles after the timeout must not touch the response.
+  2. *In-flight cap.* In `track()`: when `counters.inFlight >=
+     ctx.clicks.maxInFlight`, skip the task entirely (no rows, no hooks, no
+     track), `counters.dropped += 1`. Applies to click AND miss pipelines.
+     The response is unaffected.
+  3. *Malformed escapes.* In `parseQuery`, a key or value whose decode fails
+     is forwarded as its raw text from `req.url` (Node's parser already
+     rejects space/CR/LF/high bytes there). Well-formed parts keep today's
+     decode → re-encode. Key matching for replacement still uses the decoded
+     (or raw) key.
+  4. *queryKeys cap.* At most 20 distinct keys (first-seen order, `qr`
+     excluded before counting), each sliced to 64 chars. Storage only —
+     forwarding is untouched.
+  5. *Headers.* `Vary: User-Agent` (via `res.vary`) on every link redirect
+     (any status) and the social card. `Cache-Control: private, max-age=0`
+     on shorty's own 404 (`onMiss: 'notFound'`, expired `'notFound'`) and
+     the 410 page. 302/307 and the card keep theirs; 301/308 stay without.
+- **Invariants:** the response never waits on anything but the bounded
+  lookup; nothing in a pipeline (or a skipped one) can change the response;
+  `inFlight` never exceeds `maxInFlight`; `drain()` still waits for every
+  pipeline that was started; no new place where query VALUES, IPs or full
+  referrers reach storage, logs, hooks or track.
+- **Non-goals:** link-deleted-mid-pipeline (PR 7 integrity), projecting the
+  lookup, socket-timeout handling for non-reading clients.

@@ -48,6 +48,7 @@ export interface ResolvedContext {
     noindex: boolean;
     onMiss: 'next' | 'notFound' | string;
     onExpired: 'page' | 'notFound' | string;
+    lookupTimeoutMs: number;
   };
   destinations: { allowedHosts: Array<string | RegExp> | null; blockedHosts: Array<string | RegExp> };
   clicks: {
@@ -58,6 +59,7 @@ export interface ResolvedContext {
     timezone: string;
     geo: (req: Request) => GeoResult | null | undefined;
     ip: (req: Request) => string | undefined;
+    maxInFlight: number;
   };
   inspect: {
     timeoutMs: number;
@@ -114,6 +116,18 @@ function fail(message: string): never {
 }
 
 const REDIRECT_STATUSES: readonly number[] = [301, 302, 307, 308];
+
+/** One of `modes`, or an absolute http(s) URL — what onMiss / onExpired accept. */
+function isModeOrHttpUrl(value: unknown, modes: readonly string[]): boolean {
+  if (typeof value !== 'string') return false;
+  if (modes.includes(value)) return true;
+  try {
+    const url = new URL(value);
+    return url.protocol === 'http:' || url.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
 const RENAME_MODES: readonly RenameMode[] = ['alias', 'untilClicked', 'always', 'never'];
 
 export function resolveConfig(config: CreateShortyConfig): ResolvedContext {
@@ -158,6 +172,18 @@ export function resolveConfig(config: CreateShortyConfig): ResolvedContext {
   const redirect = config.redirect ?? {};
   const status = redirect.status ?? 302;
   if (!REDIRECT_STATUSES.includes(status)) fail('`redirect.status` must be 301, 302, 307 or 308');
+  const onMiss = redirect.onMiss ?? 'next';
+  const onExpired = redirect.onExpired ?? 'page';
+  if (!isModeOrHttpUrl(onMiss, ['next', 'notFound'])) {
+    fail(`\`redirect.onMiss\` must be 'next', 'notFound' or an absolute http(s) URL, got ${JSON.stringify(onMiss)}`);
+  }
+  if (!isModeOrHttpUrl(onExpired, ['page', 'notFound'])) {
+    fail(`\`redirect.onExpired\` must be 'page', 'notFound' or an absolute http(s) URL, got ${JSON.stringify(onExpired)}`);
+  }
+  const lookupTimeoutMs = redirect.lookupTimeoutMs ?? 2000;
+  if (!(typeof lookupTimeoutMs === 'number' && lookupTimeoutMs > 0 && Number.isFinite(lookupTimeoutMs))) {
+    fail('`redirect.lookupTimeoutMs` must be a positive number');
+  }
 
   // Clicks: on by default, but only with a pepper. A missing pepper is a
   // warning and a disabled feature — never a crash on boot (§12).
@@ -178,6 +204,8 @@ export function resolveConfig(config: CreateShortyConfig): ResolvedContext {
   }
   if (!(retentionDays > 0)) fail('`clicks.retentionDays` must be positive');
   if (!(uniqueWindowMinutes > 0)) fail('`clicks.uniqueWindowMinutes` must be positive');
+  const maxInFlight = clickCfg?.maxInFlight ?? 10_000;
+  if (!(Number.isInteger(maxInFlight) && maxInFlight > 0)) fail('`clicks.maxInFlight` must be a positive integer');
 
   const inspect = config.inspect ?? {};
 
@@ -206,8 +234,9 @@ export function resolveConfig(config: CreateShortyConfig): ResolvedContext {
       status,
       forwardQuery: redirect.forwardQuery ?? true,
       noindex: redirect.noindex ?? true,
-      onMiss: redirect.onMiss ?? 'next',
-      onExpired: redirect.onExpired ?? 'page',
+      onMiss,
+      onExpired,
+      lookupTimeoutMs,
     },
     destinations: {
       allowedHosts: config.destinations?.allowedHosts ?? null,
@@ -221,6 +250,7 @@ export function resolveConfig(config: CreateShortyConfig): ResolvedContext {
       timezone,
       geo: clickCfg?.geo ?? defaultGeo,
       ip: clickCfg?.ip ?? ((req) => req.ip),
+      maxInFlight,
     },
     inspect: {
       timeoutMs: inspect.timeoutMs ?? 5000,

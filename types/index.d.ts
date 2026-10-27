@@ -362,7 +362,11 @@ export interface Click {
   browser?: string;
   os?: string;
   device: Device;
-  /** KEYS of the incoming query only — values are never stored. */
+  /**
+   * KEYS of the incoming query only — values are never stored. At most 20
+   * distinct keys (first-seen order, `qr` excluded), each truncated to 64
+   * characters.
+   */
   queryKeys?: string[];
 }
 
@@ -566,21 +570,32 @@ export interface RedirectConfig {
    * Default true. Incoming params are appended before `#hash`; an incoming key
    * replaces EVERY occurrence of that key in the destination; repeated incoming
    * keys all forward; `qr` is stripped. No dangling `?` when nothing remains.
+   * A key or value whose `%` escapes don't decode is forwarded verbatim.
    */
   forwardQuery?: boolean;
   /** Default true → `X-Robots-Tag: noindex` on every redirect. */
   noindex?: boolean;
   /**
-   * Unknown slug. Default `'next'` — fall through to the host's next route,
+   * Unknown slug. Validated at `createShorty`: anything other than the two
+   * modes or an absolute http(s) URL throws a `TypeError` naming the key.
+   * Default `'next'` — fall through to the host's next route,
    * which is what makes any mount position and route order safe. `'notFound'`
    * answers 404; a string is an absolute URL to 302 to.
    */
   onMiss?: 'next' | 'notFound' | string;
   /**
    * Expired link without its own `expiredUrl`. Default `'page'` — 410 with a
-   * minimal HTML page. `'notFound'` answers 404; a string is a URL to 302 to.
+   * minimal HTML page. `'notFound'` answers 404; a string is an absolute
+   * http(s) URL to 302 to. Validated like `onMiss`.
    */
   onExpired?: 'page' | 'notFound' | string;
+  /**
+   * Budget for the slug lookup, in ms. Default 2000; must be > 0. When it
+   * runs out — or the connection is not open (`readyState !== 1`), checked
+   * before querying — the request goes to `next(err)` with a plain `Error`
+   * instead of waiting out mongoose's command buffering.
+   */
+  lookupTimeoutMs?: number;
 }
 
 export interface DestinationConfig {
@@ -609,6 +624,13 @@ export interface ClickConfig {
   geo?: (req: Request) => GeoResult | null | undefined;
   /** Default `req.ip` — the host owns `trust proxy`. */
   ip?: (req: Request) => string | undefined;
+  /**
+   * Most click/miss pipelines allowed in flight at once. Default 10_000; must
+   * be > 0. A hit arriving above it is still redirected normally, but its
+   * pipeline is skipped (no rows, no hooks, no track) and counted in
+   * `health().dropped`.
+   */
+  maxInFlight?: number;
 }
 
 export interface InspectConfig {
@@ -806,6 +828,8 @@ export interface ShortyHealth {
   misses: number;
   /** Click pipelines still running. */
   inFlight: number;
+  /** Pipelines skipped because `clicks.maxInFlight` was reached. */
+  dropped: number;
   /** False when no pepper was available or `clicks: false`. */
   clicksEnabled: boolean;
 }
@@ -815,8 +839,17 @@ export interface ShortyInstance {
    * PUBLIC. GET/HEAD only. The path is percent-decoded; a malformed escape,
    * empty path, `//`, dot, over-long or reserved path is not a slug → `next()`
    * with no lookup. An unknown valid slug → `onMiss` (default `next()`). An
-   * expired hit records no click. A lookup failure (DB down) → `next(err)` —
-   * the host's error handler answers; the request never hangs.
+   * expired hit records no click. A lookup failure (DB down, connection not
+   * open, or `redirect.lookupTimeoutMs` exceeded) → `next(err)` — the host's
+   * error handler answers within the budget.
+   *
+   * Headers: every link redirect (any status) and social-card response
+   * carries `Vary: User-Agent` (crawlers get the card, people the redirect);
+   * 302/307 and the
+   * card carry `Cache-Control: private, max-age=0`, as do shorty's own 404
+   * (`'notFound'`) and 410 (expired page) — link state can change, so none of
+   * them may be cached as final. A query value with a malformed `%` escape is
+   * forwarded verbatim, never re-encoded.
    */
   redirect: Router;
   /** ADMIN JSON API. The host guards it; shorty does not. Host supplies `express.json()`. */

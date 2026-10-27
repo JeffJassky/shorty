@@ -14,10 +14,12 @@ export interface Counters {
   misses: number;
   /** Click pipelines still running. */
   inFlight: number;
+  /** Pipelines skipped at `clicks.maxInFlight`. Nothing increments it yet — PR 8. */
+  dropped: number;
 }
 
 export function createCounters(): Counters {
-  return { clickFailures: 0, hookFailures: 0, misses: 0, inFlight: 0 };
+  return { clickFailures: 0, hookFailures: 0, misses: 0, inFlight: 0, dropped: 0 };
 }
 
 export function snapshotHealth(counters: Counters, clicksEnabled: boolean): ShortyHealth {
@@ -26,6 +28,7 @@ export function snapshotHealth(counters: Counters, clicksEnabled: boolean): Shor
     hookFailures: counters.hookFailures,
     misses: counters.misses,
     inFlight: counters.inFlight,
+    dropped: counters.dropped,
     clicksEnabled,
   };
 }

@@ -849,3 +849,93 @@ describe('aggregation caps (traps #18)', () => {
     }
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// End review (a) follow-ups — hot-path hardening (PR 8)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('End review (a) follow-ups', () => {
+  describe('clicks.maxInFlight', () => {
+    it('queues click pipelines without bound instead of dropping (and counting) those above the cap', async () => {
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      let hooked = 0;
+      const { h, link } = await setup({
+        config: { clicks: { maxInFlight: 2 }, onClick: async () => { hooked += 1; await gate; } },
+      });
+      try {
+        for (let i = 0; i < 5; i += 1) {
+          const res = await hit(h.app, '/go/spring', { ip: `198.51.100.${i + 1}` }).timeout(5000);
+          expect(res.status).toBe(302);
+          expect(res.headers.location).toBe(DEST);
+        }
+        expect(h.shorty.health().inFlight).toBeLessThanOrEqual(2);
+        expect(h.shorty.health().dropped).toBe(3);
+      } finally {
+        release(); // a failed assertion must not leave pipelines stuck for the next harness's drain
+      }
+      await h.shorty.drain();
+      expect(h.shorty.health().inFlight).toBe(0);
+      expect(h.shorty.health().dropped).toBe(3);
+      expect(await clicksOf(h, link)).toHaveLength(2);
+      expect((await linkDoc(h, link)).clicks).toBe(2);
+      expect(hooked).toBe(2);
+    });
+
+    it('queues miss pipelines past the cap instead of dropping them too', async () => {
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const missed: string[] = [];
+      const { h } = await setup({
+        config: {
+          clicks: { maxInFlight: 1 },
+          redirect: { onMiss: 'notFound' },
+          onMiss: async (e) => { missed.push(e.path); await gate; },
+        },
+      });
+      try {
+        expect((await hit(h.app, '/go/nolink1')).status).toBe(404);
+        expect((await hit(h.app, '/go/nolink2')).status).toBe(404);
+        expect(h.shorty.health().dropped).toBe(1);
+      } finally {
+        release();
+      }
+      await h.shorty.drain();
+      expect(missed).toEqual(['/nolink1']);
+      expect(await h.shorty.models.Miss.countDocuments()).toBe(1);
+    });
+
+    it('reports dropped: 0 when nothing hit the cap', async () => {
+      const { h } = await setup();
+      await hit(h.app, '/go/spring');
+      await h.shorty.drain();
+      expect(h.shorty.health().dropped).toBe(0);
+    });
+  });
+
+  describe('queryKeys cap (20 keys × 64 chars)', () => {
+    it('stores every incoming key at full length instead of the first 20, each cut to 64 chars', async () => {
+      const long = `k${'x'.repeat(99)}`;
+      const keys = Array.from({ length: 29 }, (_, i) => `p${i}`);
+      const query = ['qr=1', `${long}=v`, ...keys.map((k) => `${k}=v`)].join('&');
+      const seen: ClickEvent[] = [];
+      const { h, link } = await setup({ config: { onClick: (e) => { seen.push(e); } } });
+      const res = await hit(h.app, `/go/spring?${query}`);
+      expect(res.status).toBe(302);
+      await h.shorty.drain();
+      const expected = [long.slice(0, 64), ...keys.slice(0, 19)];
+      const [c] = await clicksOf(h, link);
+      expect(c.queryKeys).toEqual(expected);
+      expect(seen[0].click.queryKeys).toEqual(expected);
+    });
+
+    it('caps forwarding as well as recording', async () => {
+      // The cap is a storage rule: every key still forwards to the destination.
+      const keys = Array.from({ length: 30 }, (_, i) => `p${i}`);
+      const { h } = await setup();
+      const res = await hit(h.app, `/go/spring?${keys.map((k) => `${k}=1`).join('&')}`);
+      expect(res.headers.location).toBe(`${DEST}&${keys.map((k) => `${k}=1`).join('&')}`);
+      await h.shorty.drain();
+    });
+  });
+});
