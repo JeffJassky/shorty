@@ -7,6 +7,8 @@ import { ToastProvider } from './components/toast';
 import { AppContext, type AppContextValue } from './lib/context';
 import { hrefs, navigate, useRoute } from './lib/router';
 import { LinkFormScreen } from './screens/link-form';
+import { AnalyticsScreen } from './screens/analytics';
+import { LinkDetailScreen } from './screens/link-detail';
 import { LinksScreen } from './screens/links';
 
 /**
@@ -60,18 +62,26 @@ export default function App({ config }: { config: UiRuntimeConfig }) {
               <span className="brand-name">{config.title}</span>
             </a>
             <nav className="topnav" aria-label="Main">
-              <a href={hrefs.list} className="topnav-link active" aria-current="page">Links</a>
+              <a href={hrefs.list} className={'topnav-link' + (route.name !== 'analytics' ? ' active' : '')} aria-current={route.name !== 'analytics' ? 'page' : undefined}>Links</a>
+              {config.clicksEnabled && (
+                <a href={hrefs.analytics} className={'topnav-link' + (route.name === 'analytics' ? ' active' : '')} aria-current={route.name === 'analytics' ? 'page' : undefined}>Analytics</a>
+              )}
             </nav>
             <span className="topbar-spacer" />
             <a className="btn btn-primary" href={hrefs.new}><Icons.Plus /> New link</a>
           </header>
           <main className="content">
             <div className="content-inner">
-              <LinksScreen active={route.name === 'list'} />
+              {/* The list stays mounted (hidden) behind detail and analytics so filters and scroll survive the round trip. */}
+              <div hidden={route.name === 'detail' || route.name === 'analytics' || (route.name === 'edit' && route.from === 'detail')}>
+                <LinksScreen active={route.name === 'list'} />
+              </div>
+              {(route.name === 'detail' || (route.name === 'edit' && route.from === 'detail')) && <LinkDetailScreen key={route.id} id={route.id} />}
+              {route.name === 'analytics' && <AnalyticsScreen />}
             </div>
           </main>
           {route.name === 'new' && <LinkFormScreen key="new" mode="new" />}
-          {(route.name === 'edit' || route.name === 'detail') && <LinkFormScreen key={route.id} mode="edit" id={route.id} />}
+          {route.name === 'edit' && <LinkFormScreen key={route.id} mode="edit" id={route.id} from={route.from} />}
         </div>
       </ToastProvider>
     </AppContext.Provider>

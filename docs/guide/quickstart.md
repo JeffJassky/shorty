@@ -1,10 +1,15 @@
 # Quickstart
 
+## Install
+
 ```bash
 npm install @jeffjassky/shorty
 ```
 
-## Mount it
+Peers: `express` 4.18+ or 5, `mongoose` 7, 8 or 9. MongoDB 5.2+. See
+[Requirements](./requirements).
+
+## Create and mount
 
 ```js
 import express from 'express';
@@ -13,62 +18,52 @@ import { createShorty } from '@jeffjassky/shorty';
 
 await mongoose.connect(process.env.MONGO_URL);
 
-const pkg = createShorty({
+const shorty = createShorty({
   connection: mongoose,
-  resolveUser: (req) => req.user && {
-    id: req.user._id,
-    email: req.user.email,
-    displayName: req.user.name,
-    isAdmin: req.user.role === 'admin',
-  },
+  publicBaseUrl: 'https://acme.com/go',        // where `redirect` is reachable
+  pepper: process.env.SHORTY_PEPPER,           // enables click recording
 });
-
-// Build indexes once at boot. Mongoose builds them in the background, and some
-// queries throw rather than return empty while an index is still missing.
-await pkg.model.createIndexes();
+await shorty.ready();                          // indexes, TTLs, case-mode re-key
 
 const app = express();
+app.use(express.json());                       // yours, not ours
 
-// YOUR job, not the package's. A body parser mounted inside a library router
-// silently changes body parsing for everything mounted after it.
-app.use(express.json());
-
-app.use('/api/shorty', requireAuth, pkg.routes);
-app.use('/shorty',    requireAuth, pkg.ui({ mountPath: '/shorty' }));
+app.use('/go', shorty.redirect);                                     // public
+app.use('/admin/links/api', requireAdmin, shorty.routes);            // JSON API
+app.use('/admin/links', requireAdmin, shorty.ui({
+  mountPath: '/admin/links',
+  apiBase: '/admin/links/api',
+}));
 ```
 
-## Add the admin surface
+Four things to get right:
 
-The admin routers are **not guarded by this package**. `isAdmin` from your
-adapter drives badges and which UI renders; it refuses nobody. Your middleware
-is the entire boundary:
+1. **`publicBaseUrl` is the URL a browser uses**, including any path prefix.
+   It is never inferred from a request.
+2. **`await shorty.ready()` once at boot.** It creates every collection and
+   builds indexes. Skipping it leaves you with slow or missing indexes.
+3. **`express.json()` is yours.** `routes` does not install a body parser. A
+   missing body is a 400, not a crash.
+4. **`requireAdmin` is yours.** `routes` and `ui()` trust whoever reaches
+   them. Test the guard (see [Admin UI](./ui)).
+
+The three routers can be mounted in any order; see
+[Mounting & route order](./mounting).
+
+## Create a link
+
+From the UI at `/admin/links`, or in code:
 
 ```js
-app.use('/api/shorty/admin', requireAuth, requireAdmin, pkg.adminRoutes);
-app.use('/admin/shorty',    requireAuth, requireAdmin,
-        pkg.adminUi({ mountPath: '/admin/shorty' }));
+const link = await shorty.createLink({
+  url: 'https://acme.com/sale?utm_source=instagram&utm_medium=social',
+  slug: 'spring',
+});
+link.shortUrl;   // https://acme.com/go/spring
 ```
 
-Then copy `examples/admin-guard.test.js` into your suite. That test lives in
-your repo because it is the only thing that catches a refactor removing the
-guard.
+## Without clicks
 
-## `mountPath` must be true
-
-It is baked into a `<base href>` at request time, so it must match where the
-router actually is — and behind a proxy that strips a prefix, it is the path the
-**browser** sees, not the one Express sees. Get it wrong and every asset 404s
-while the HTML loads fine.
-
-## Run the example
-
-```bash
-npm run build && node examples/express/server.js
-# → http://localhost:3000/shorty
-```
-
-The example imports the built package from `dist/`, not `src/` — the source is
-TypeScript and the example runs under plain `node`. Building first also means
-the example exercises exactly what you install.
-
-In-memory Mongo, fake auth, every mount wired. Switch identity with `?as=admin`.
+Leave `pepper` unset (and `SHORTY_PEPPER` empty) and click recording is off
+with one logged warning. Redirects still work. Set `clicks: false` to turn it
+off explicitly.

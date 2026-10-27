@@ -1,5 +1,3 @@
-import os from 'node:os';
-import path from 'node:path';
 import { defineConfig, devices } from '@playwright/test';
 
 /**
@@ -17,8 +15,9 @@ export default defineConfig({
   workers: 1,
   retries: 0,
   reporter: [['list']],
-  // Artifacts stay out of the tree: scripts/check-tracked.mjs fails on untracked files under test/.
-  outputDir: path.join(os.tmpdir(), 'shorty-e2e-results'),
+  // Repo-relative and gitignored, so CI can upload traces on failure.
+  // (Not under test/: scripts/check-tracked.mjs fails on untracked files there.)
+  outputDir: 'playwright-results',
   use: {
     baseURL: process.env.E2E_BASE_URL ?? 'http://127.0.0.1:3000/admin/links/',
     trace: 'retain-on-failure',

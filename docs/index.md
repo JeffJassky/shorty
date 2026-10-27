@@ -3,57 +3,26 @@ layout: home
 
 hero:
   name: shorty
-  text: Shorty
+  text: Short links, inside your app
   tagline: "Self-hosted short links for Express + MongoDB: UTM builder, click analytics, React admin UI"
   actions:
     - theme: brand
       text: Quickstart
       link: /guide/quickstart
     - theme: alt
-      text: View on GitHub
+      text: Introduction
+      link: /guide/introduction
+    - theme: alt
+      text: GitHub
       link: https://github.com/JeffJassky/shorty
 
 features:
   - title: Embedded, not external
-    icon: 📦
-    details: '`npm install @jeffjassky/shorty`, mount the routers, done. Your users stay signed in to your app — no redirect to a third-party service, no SSO handshake, no data leaving your database.'
+    details: Install the package, mount three routers, done. Links, clicks and rollups live in your MongoDB. Nobody signs in to a third-party service.
   - title: Your auth, not ours
-    icon: 🪪
-    details: One `resolveUser(req)` function is the entire integration contract. Sessions, JWTs, API keys — shorty never authenticates anyone, it just asks who is calling.
-  - title: Prebuilt React UI
-    icon: 🎛️
-    details: One bundle, served from your own domain at any mount path. No bundler in your app, no framework agreement — the host can be Vue, Svelte, or server-rendered.
-  - title: Honest about deletion
-    icon: 🧹
-    details: '`purgeUser()` removes everything shorty stored about them and repairs every derived value it touches. One call in your account-deletion path.'
+    details: The admin API and UI are plain Express routers. You put your own guard in front of them; shorty never authenticates anyone.
+  - title: A form that helps
+    details: Paste a URL and it splits into UTM fields and parameters. Suggestions come from your existing links, near-duplicates are flagged, and previews show how the link will look.
+  - title: Honest analytics
+    details: No raw IPs, a visitor hash that rotates daily, and bots counted apart from people so you can hide, separate or include them.
 ---
-
-```js
-import mongoose from 'mongoose';
-import express from 'express';
-import { createShorty } from '@jeffjassky/shorty';
-
-await mongoose.connect(process.env.MONGO_URL);
-
-const pkg = createShorty({
-  connection: mongoose,
-  resolveUser: (req) => req.session.user && {
-    id: req.session.user._id,
-    email: req.session.user.email,
-    displayName: req.session.user.name,
-    isAdmin: req.session.user.role === 'admin',
-  },
-});
-
-const app = express();
-app.use(express.json());
-
-// Public
-app.use('/api/shorty', requireAuth, pkg.routes);
-app.use('/shorty',    requireAuth, pkg.ui({ mountPath: '/shorty' }));
-
-// Admin — separate guard, separate route
-app.use('/api/shorty/admin', requireAuth, requireAdmin, pkg.adminRoutes);
-app.use('/admin/shorty',    requireAuth, requireAdmin,
-        pkg.adminUi({ mountPath: '/admin/shorty' }));
-```

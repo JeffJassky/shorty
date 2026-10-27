@@ -1,5 +1,5 @@
 import type { ShortyClient } from '../../../types/client';
-import { dateOnly, daysAgo } from './format';
+import { daysAgo } from './format';
 
 /**
  * 30-day sparkline data, fetched lazily per visible row: at most 6 requests in
@@ -23,7 +23,7 @@ export function loadSpark(client: ShortyClient, linkId: string): Promise<number[
   const p = new Promise<number[]>((resolve) => {
     queue.push(() => {
       client
-        .stats({ linkId, from: dateOnly(daysAgo(29)), to: dateOnly(new Date()), interval: 'day' })
+        .stats({ linkId, from: daysAgo(29).toISOString(), to: new Date().toISOString(), interval: 'day' })
         .then((s) => resolve(s.series.map((pt) => pt.humans.clicks)), () => { cache.delete(linkId); resolve([]); })
         .finally(() => { inFlight--; pump(); });
     });
