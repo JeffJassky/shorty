@@ -106,6 +106,12 @@ const inspect: InspectConfig = {
   isAllowedAddress: () => true, userAgent: 'x',
 };
 const screenshot: ScreenshotAdapter = async () => ({ contentType: 'image/png', body: Buffer.from('') });
+const pinnedScreenshot: ScreenshotAdapter = async (url, ctx) => {
+  const pinned: string[] = ctx.addresses;
+  return pinned.length > 0 ? { contentType: 'image/png', body: Buffer.from(url) } : null;
+};
+// @ts-expect-error the adapter context carries addresses as strings
+const badScreenshot: ScreenshotAdapter = async (_url, ctx: { addresses: number[] }) => null;
 const track: TrackFn = (name, opts) => void [name, opts?.attrs, opts?.subjects];
 const logger: Logger = { warn: () => {} };
 const resolveUser: ResolveUser = (req) => defaultResolveUser(req);
@@ -196,6 +202,9 @@ async function api(s: ShortyInstance, req: Request) {
 async function storage(models: ShortyModels) {
   const link: LinkDoc | null = await models.Link.findOne({ keys: 'spring' }).lean<LinkDoc>();
   const keys: string[] | undefined = link?.keys;
+  const wv: number | undefined = link?.wv;
+  const ck: boolean | undefined = link?.ck;
+  void [wv, ck];
   const slugDoc: SlugDoc | null = await models.Slug.findById('spring').lean<SlugDoc>();
   const hist: HistoryDoc[] = await models.History.find().lean<HistoryDoc[]>();
   const click: ClickDoc | null = await models.Click.findOne().lean<ClickDoc>();

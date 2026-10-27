@@ -78,6 +78,9 @@ export interface Param {
  * `baseUrl` is scheme + host + path ONLY: absolute, http(s), no query, no
  * fragment. A `baseUrl` carrying `?` or `#` is `invalid_base_url` — callers
  * holding a full URL use `parseUrl` (or pass `url` to `createLink`).
+ * Links STORE `baseUrl` in WHATWG-serialized form (`new URL(x)` →
+ * protocol//host/path): host lowercased and punycoded, tabs/newlines removed,
+ * `https://a.com` → `https://a.com/`. What the redirect sends is always that form.
  */
 export interface UrlParts {
   baseUrl: string;
@@ -241,6 +244,10 @@ export interface LinkInput {
  * - `tags` REPLACES the array.
  * - `slug` renames per `slug.rename` (§7.3). A `slug` whose key equals the
  *   current key is NOT a rename (forms send whole objects) and never locks.
+ *   Under `caseSensitive: false` such a slug that differs only in case
+ *   (`spring` → `Spring`) DOES update the display slug, case kept — with no
+ *   claim change, no alias, no history entry, in every rename mode
+ *   (`never` and a clicked `untilClicked` included).
  * - `redirect` merges; a key set to `null` falls back to config.
  *
  * A revision is written only when the composed destination actually changes.
@@ -552,7 +559,14 @@ export interface SlugConfig {
   /**
    * Default false: `/Spring` and `/spring` are one link. Flipping it once links
    * exist re-keys them in `ready()`; a flip that would merge two links throws
-   * there, naming both.
+   * `case_collision` there, naming both, and changes nothing.
+   *
+   * Every link records the mode its keys were written under (`LinkDoc.ck`),
+   * and EVERY `ready()` re-keys the links whose mode differs from this one. So
+   * a rolling deploy across a flip — old and new instances writing at once —
+   * converges on the mode of the LAST instance to boot: links written by the
+   * other mode in the meantime are re-keyed then. A link written by the other
+   * mode is unreachable by this mode's lookups until that next boot.
    */
   caseSensitive?: boolean;
   /** Default `'alias'`. */
@@ -621,9 +635,26 @@ export interface InspectConfig {
   /** DNS. Default `dns.promises.lookup(host, { all: true })`. Every address is checked. */
   lookup?: (hostname: string) => Promise<string[]>;
   /**
-   * Default rejects loopback, private, link-local (incl. 169.254.169.254),
-   * CGNAT, multicast, unspecified and reserved ranges, v4 and v6. Override for
-   * an intranet deployment that previews internal destinations.
+   * Every address a hop resolves to must pass, or nothing is fetched. The
+   * default allows public unicast only:
+   * - v4: refuses 0/8, 10/8, 100.64/10, 127/8, 169.254/16 (cloud metadata),
+   *   172.16/12, 192.0.0/24, 192.0.2/24, 192.88.99/24, 192.168/16, 198.18/15,
+   *   198.51.100/24, 203.0.113/24, 224/4 and above.
+   * - v6: allows ONLY 2000::/3, minus 2001::/32 (Teredo), 2001:2::/48,
+   *   2001:10::/28, 2001:20::/28, 2001:db8::/32, 2002::/16 embedding a refused
+   *   v4, and 3fff::/20. Outside 2000::/3 everything is refused (::, ::1,
+   *   ::/96 and ::ffff:0:0:0/96 forms, 100::/64, 100:0:0:1::/64, 5f00::/16,
+   *   fc00::/7, fe80::/10, fec0::/10, ff00::/8, unallocated space), except
+   *   ::ffff:0:0/96 and 64:ff9b::/96, which are judged by the v4 they embed
+   *   (64:ff9b:1::/48 is refused).
+   *
+   * Override for an intranet deployment that previews internal destinations.
+   *
+   * Deployment note: ports are not restricted on public hosts — a redirect may
+   * point at any port of any public address. A host whose own public IP is
+   * bound on a local interface (common on VPS providers), or that runs on a
+   * cloud with public-but-special endpoints (e.g. Azure's 168.63.129.16),
+   * should pass an `isAllowedAddress` that also refuses those addresses.
    */
   isAllowedAddress?: (ip: string) => boolean;
   /** Default `'shorty-inspect (+link preview)'`. */
@@ -632,10 +663,25 @@ export interface InspectConfig {
 
 /**
  * Called once per inspect with the FINAL url, only when the safe fetch reached
- * it (never for a private/blocked or unreachable destination). A throw or a
- * null → no screenshot; never fails the inspect.
+ * it — never for a refused (`private_address`) or `unreachable` destination.
+ * That is the ONLY guarantee shorty makes here.
+ *
+ * The url is UNVALIDATED for the adapter's own fetch. A browser re-resolves
+ * DNS (the name can now point at 127.0.0.1 or 169.254.169.254 — rebinding),
+ * follows script and meta redirects, and loads subresources from any host; a
+ * screenshot of an internal page hands its pixels back. The adapter MUST
+ * enforce its own egress policy: a resolver pinned to `ctx.addresses`, request
+ * interception that refuses non-public addresses, or a sandboxed network.
+ *
+ * `ctx.addresses` — the IPs the safe fetch checked and connected to for the
+ * final hop, for pinning the browser's resolver to them.
+ *
+ * A throw or a null → no screenshot; never fails the inspect.
  */
-export type ScreenshotAdapter = (url: string) => Promise<{ contentType: string; body: Buffer } | null>;
+export type ScreenshotAdapter = (
+  url: string,
+  ctx: { addresses: string[] },
+) => Promise<{ contentType: string; body: Buffer } | null>;
 
 /** Structurally a `@jeffjassky/telemetry` client's `track`. No-op by default. */
 export type TrackFn = (
@@ -734,6 +780,24 @@ export interface LinkDoc extends Omit<Link, 'id' | 'shortUrl' | 'aliases'> {
   /** slugKey + every alias key. Redirect lookups read this. */
   keys: string[];
   aliases: Array<{ slug: string; at: Date }>;
+  /**
+   * Write version. 1 at create; +1 on EVERY write to the link's own fields —
+   * update, archive, unarchive, re-key. Clicks never bump it (counters are
+   * `$inc`s that don't contend with edits). `updateLink` pins it in its write
+   * filter: a write planned from a stale read matches nothing and is re-planned
+   * (with its claim released), so no edit is ever derived from an outdated
+   * copy of the link. Typed optional only so projections type-check; every
+   * stored link has it.
+   */
+  wv: number;
+  /**
+   * The `caseSensitive` mode `slugKey` / `keys` were computed under. Stamped
+   * by every write that sets keys (create, rename, re-key). `ready()` re-keys
+   * every link with `ck !== slug.caseSensitive` — the source of truth for
+   * re-keying; `MetaDoc` is advisory. Typed optional only so projections
+   * type-check; every stored link has it.
+   */
+  ck: boolean;
 }
 
 /** `_id` is the slug key: the uniqueness authority across slugs AND aliases. */
@@ -777,7 +841,11 @@ export interface MissDoc {
   referrerHost?: string;
 }
 
-/** Singleton `_id: 'config'` — remembers the case mode keys were written under. */
+/**
+ * Singleton `_id: 'config'` — the case mode of the last `ready()`. ADVISORY:
+ * re-keying is decided per link by `LinkDoc.ck`, so a missing or stale Meta
+ * (dropped collection, other-mode instance) never strands links.
+ */
 export interface MetaDoc {
   _id: string;
   caseSensitive: boolean;
@@ -826,8 +894,16 @@ export interface ShortyInstance {
 
   /**
    * Create every collection and build its indexes (even when empty), reconcile
-   * the click/seen TTLs with config, re-key slugs if
-   * `caseSensitive` changed. Idempotent. Await once at boot — traps #3.
+   * the click/seen TTLs with config, and re-key every link whose `ck` differs
+   * from `slug.caseSensitive` — on EVERY boot, whatever Meta says (a missing
+   * Meta with links present is handled by the same rule). Merges throw
+   * `case_collision` before anything is written. Re-key writes are matched
+   * against the scanned snapshot: a link renamed by a concurrent writer during
+   * the re-key is recomputed from its new state, never overwritten with stale
+   * keys, and its current slug stays claimed. A crash mid-way is repaired by
+   * running it again. Rolling deploys across a flip converge on the last
+   * instance to boot (see `SlugConfig.caseSensitive`). Idempotent. Await once
+   * at boot — traps #3.
    */
   ready(): Promise<void>;
   /**
@@ -839,13 +915,38 @@ export interface ShortyInstance {
   health(): ShortyHealth;
 
   createLink(input: LinkInput, ctx?: CallContext): Promise<Link>;
-  /** Unknown id → `not_found`. Hooks receive only the history entries THIS update wrote. */
+  /**
+   * Unknown id → `not_found`. Hooks receive only the history entries THIS update wrote.
+   *
+   * Integrity guarantees, under any interleaving with other updates, renames,
+   * clicks, archives and deletes of the same link:
+   * - every `Slug` row for the link is in `link.keys` and vice versa, and only
+   *   the `slugKey` row is `current` — no orphan claims, no unclaimed keys;
+   * - a race never drops an alias (A→B→A while another rename is in flight
+   *   keeps every old slug redirecting);
+   * - each destination history entry's `rev` equals the `link.rev` it
+   *   produced — no duplicates, no gaps;
+   * - the `untilClicked` lock holds against a first human click that lands
+   *   between this update's read and its write (`slug_locked`);
+   * - a write whose acknowledgement is lost (network error after the server
+   *   applied it) keeps its claim: a claim is released only after confirming
+   *   the link does not hold that key;
+   * - patches of different fields of the same object (`redirect.status`,
+   *   `redirect.forwardQuery`) never overwrite each other;
+   * - an update racing a delete leaves no history or claim rows behind.
+   */
   updateLink(id: string, patch: LinkPatch, ctx?: CallContext): Promise<Link>;
   archiveLink(id: string, ctx?: CallContext): Promise<Link>;
   unarchiveLink(id: string, ctx?: CallContext): Promise<Link>;
   /**
    * Hard delete: link, history, clicks, rollups; frees every key. Unknown id →
    * `not_found`. Summary counts raw click rows, history entries, and keys.
+   *
+   * A deleted link leaves NO slug, history, daily or click rows behind — even
+   * when a click pipeline or an update was mid-flight for it: those writers
+   * re-check that the link exists after writing and remove what they wrote.
+   * A failed create whose cleanup cannot remove the Link row keeps the claim
+   * (two links never share a key).
    */
   deleteLink(id: string, ctx?: CallContext): Promise<DeleteSummary>;
 
@@ -864,7 +965,14 @@ export interface ShortyInstance {
   inspect(url: string): Promise<InspectResult>;
   /** `publicBaseUrl/slug`. */
   shortUrl(linkOrSlug: Link | string): string;
-  /** Rebuild `clicks` / `uniqueClicks` / `botClicks` from daily rollups. */
+  /**
+   * Rebuild `clicks` / `uniqueClicks` / `botClicks` from daily rollups.
+   *
+   * The click pipeline writes Link `$inc` → Daily `$inc` → raw Click row, so
+   * a partial failure leaves `raw clicks ≤ daily ≤ link counter`, never the
+   * reverse. Daily is the durable truth: after `recount`, the counters equal
+   * the daily sums exactly, and are never below the raw click rows still held.
+   */
   recount(id: string): Promise<Link>;
 
   models: ShortyModels;
