@@ -72,6 +72,7 @@
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@types/supertest": "^6.0.2",
+    "@types/ua-parser-js": "^0.7.39",
     "@vitejs/plugin-react": "^4.3.0",
     "express": "^5.2.1",
     "mongodb-memory-server": "^11.1.0",
@@ -87,5 +88,9 @@
   },
   "publishConfig": {
     "access": "public"
+  },
+  "dependencies": {
+    "isbot": "^5.2.2",
+    "ua-parser-js": "^1.0.41"
   }
 }

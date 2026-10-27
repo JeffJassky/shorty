@@ -9,7 +9,7 @@ import type { Counters } from './counters.js';
  */
 
 type Hooks = ResolvedContext['hooks'];
-type LifecycleHook = 'onCreate' | 'onUpdate' | 'onArchive' | 'onDelete';
+type LifecycleHook = 'onCreate' | 'onUpdate' | 'onArchive' | 'onDelete' | 'onClick' | 'onMiss';
 type HookArg<K extends LifecycleHook> = Parameters<NonNullable<Hooks[K]>>[0];
 
 export type TrackEvent =
@@ -17,13 +17,14 @@ export type TrackEvent =
   | 'shorty.link_updated'
   | 'shorty.link_archived'
   | 'shorty.link_unarchived'
-  | 'shorty.link_deleted';
+  | 'shorty.link_deleted'
+  | 'shorty.clicked';
 
 export interface HookRunner {
   /** Call `ctx.hooks[name]` with `arg`, if configured. Never throws. */
   hook<K extends LifecycleHook>(name: K, arg: HookArg<K>): Promise<void>;
   /** Emit a `track` event carrying the `shorty_link` subject. Never throws. */
-  track(name: TrackEvent, linkId: string): Promise<void>;
+  track(name: TrackEvent, linkId: string, attrs?: Record<string, string | number | boolean>): Promise<void>;
 }
 
 export function createHooks(ctx: ResolvedContext, counters: Counters): HookRunner {
@@ -43,12 +44,12 @@ export function createHooks(ctx: ResolvedContext, counters: Counters): HookRunne
       }
     },
 
-    async track(name, linkId) {
+    async track(name, linkId, attrs) {
       try {
         // `TrackFn` is declared void, but a host may hand in an async client.
         await (ctx.track as (n: string, o: NonNullable<Parameters<NonNullable<CreateShortyConfig['track']>>[1]>) => unknown)(
           name,
-          { subjects: [{ type: 'shorty_link', id: linkId }] },
+          { ...(attrs ? { attrs } : {}), subjects: [{ type: 'shorty_link', id: linkId }] },
         );
       } catch (err) {
         failed(`track(${name})`, err);
