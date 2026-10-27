@@ -6,6 +6,7 @@ import { createClickService } from './clicks.js';
 import { notImplemented } from './errors.js';
 import { createCounters, snapshotHealth } from './counters.js';
 import { createHooks } from './hooks.js';
+import { createInspect } from './inspect/index.js';
 import { createLifecycle } from './lifecycle.js';
 import { createLinkService } from './links.js';
 import { createRedirect } from './redirect.js';
@@ -70,7 +71,7 @@ export function createShorty(config: CreateShortyConfig): ShortyInstance {
     tags: service.tags,
     checkSlug: service.checkSlug,
     generateSlug: service.generateSlug,
-    inspect: async () => notImplemented('inspect'),   // PR 3
+    inspect: createInspect(ctx),
     shortUrl: (linkOrSlug: Link | string) =>
       `${ctx.publicBaseUrl}/${typeof linkOrSlug === 'string' ? linkOrSlug : linkOrSlug.slug}`,
     recount: service.recount,
