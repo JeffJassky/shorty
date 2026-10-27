@@ -41,6 +41,8 @@ export default function App({ config }: { config: UiRuntimeConfig }) {
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       const t = e.target as HTMLElement | null;
       if (t && t.closest('input,textarea,select,[contenteditable="true"],[role="dialog"]')) return;
+      // Focus can sit on <body> behind an open sheet or dialog; leave those alone.
+      if (document.querySelector('[role="dialog"]')) return;
       if (e.key === 'n' || e.key === 'N') { e.preventDefault(); navigate(hrefs.new); }
       else if (e.key === '/') { e.preventDefault(); document.getElementById('links-search')?.focus(); }
     };

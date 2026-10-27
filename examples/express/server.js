@@ -6,6 +6,9 @@
  * Admin UI:   http://127.0.0.1:3000/admin/links        (?as=staff to sign in as staff)
  * Short links: http://127.0.0.1:3000/go/<slug>
  *
+ * Slug rename mode (used by the e2e suite): SHORTY_RENAME=alias|untilClicked|always|never
+ * (default alias).
+ *
  * Try remounting `redirect` at '/' — it falls through to the host's own routes
  * for anything that isn't a known slug, whatever order they're registered in.
  */
@@ -30,6 +33,7 @@ const shorty = createShorty({
   connection: mongoose,
   publicBaseUrl: `http://127.0.0.1:${port}/go`,
   pepper: 'example-pepper-change-me',
+  slug: { rename: process.env.SHORTY_RENAME || 'alias' },
   resolveUser: (req) => (req.person ? { id: req.person.id, name: req.person.name } : null),
   onClick: ({ link, click }) => console.log(`click ${link.slug}${click.bot ? ' (bot)' : ''}`),
   logger: console,

@@ -43,7 +43,7 @@ function statusTone(status: number): 'green' | 'amber' | 'red' {
 
 function Destination({ state, onUseFinalUrl }: { state: InspectState; onUseFinalUrl: (url: string) => void }) {
   const r = state.result;
-  if (!r) return <p className="muted text-sm">{state.stale ? 'Checking…' : ''}</p>;
+  if (!r) return <p className="muted text-sm">{state.stale ? 'Checking…' : 'No response.'}</p>;
   const hasPrivate = r.warnings.some((w) => w.code === 'private_address');
   return (
     <div className="vstack" style={{ gap: 12 }}>
@@ -64,11 +64,11 @@ function Destination({ state, onUseFinalUrl }: { state: InspectState; onUseFinal
           ))}
         </ol>
       )}
-      {r.warnings.map((w) => (
+      {r.warnings.map((w, i) => (
         w.code === 'private_address' ? (
-          <p key={w.code} className="muted text-sm">Preview isn&apos;t available for internal addresses.</p>
+          <p key={`${w.code}-${i}`} className="muted text-sm">Preview isn&apos;t available for internal addresses.</p>
         ) : (
-          <div key={w.code} className="card warn-row" role="note">
+          <div key={`${w.code}-${i}`} className="card warn-row" role="note">
             <Icons.Warning className="icon warn-ico" />
             <span className="grow">{w.message}</span>
             {w.fix && (

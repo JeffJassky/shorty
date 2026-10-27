@@ -176,3 +176,21 @@ test.describe('6. phone width', () => {
     expect(await noSideScroll()).toBe(true);
   });
 });
+
+test('7. Esc on a dirty form asks before discarding; Keep editing keeps the values', async ({ page }) => {
+  await page.goto('./#/new');
+  await destination(page).fill('https://example.com/dirty');
+  await page.locator('#f-title').fill('Half done');
+  await page.locator('#f-title').press('Escape');
+
+  const confirm = page.getByRole('dialog', { name: 'Discard changes?' });
+  await expect(confirm).toBeVisible();
+  await confirm.getByRole('button', { name: 'Keep editing' }).click();
+  await expect(confirm).toBeHidden();
+  await expect(page.getByRole('dialog', { name: 'New link' })).toBeVisible();
+  await expect(page.locator('#f-title')).toHaveValue('Half done');
+
+  // N must not navigate away while the sheet is open.
+  await page.locator('body').press('n');
+  await expect(page).toHaveURL(/#\/new$/);
+});

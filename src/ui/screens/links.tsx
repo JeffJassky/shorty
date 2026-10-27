@@ -55,12 +55,13 @@ function Spark({ link }: { link: LinkJson }) {
 }
 
 function UtmChips({ link }: { link: LinkJson }) {
-  const vals = (['source', 'medium', 'campaign', 'term', 'content', 'id'] as const)
-    .map((f) => link.utm[f])
-    .filter((v): v is string => Boolean(v));
+  const pick = (fields: readonly ('source' | 'medium' | 'campaign' | 'term' | 'content' | 'id')[]) =>
+    fields.map((f) => link.utm[f]).filter((v): v is string => Boolean(v));
+  const shown = pick(['source', 'medium', 'campaign']);
+  const others = pick(['term', 'content', 'id']);
+  const vals = [...shown, ...others];
   if (!vals.length) return <span className="subtle">—</span>;
-  const shown = vals.slice(0, 3);
-  const rest = vals.length - shown.length;
+  const rest = others.length;
   return (
     <span className="chips-inline">
       {shown.map((v, i) => <span key={`${i}-${v}`} className="tag">{v}</span>)}

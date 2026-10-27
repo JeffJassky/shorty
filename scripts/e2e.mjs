@@ -36,22 +36,28 @@ async function waitFor(url, ms) {
 
 if (!process.env.E2E_SKIP_BUILD && run('npm', ['run', 'build']).status !== 0) process.exit(1);
 
-const port = await freePort();
-const server = spawn('node', ['examples/express/server.js'], {
-  env: { ...process.env, PORT: String(port) },
-  stdio: ['ignore', 'inherit', 'inherit'],
-});
-const stop = () => { if (!server.killed) server.kill('SIGTERM'); };
+/** One example host per slug-rename mode; each is its own in-memory database. */
+const MODES = { E2E_BASE_URL: 'alias', E2E_BASE_URL_UNTIL_CLICKED: 'untilClicked', E2E_BASE_URL_ALWAYS: 'always', E2E_BASE_URL_NEVER: 'never' };
+const servers = [];
+const stop = () => { for (const s of servers) if (!s.killed) s.kill('SIGTERM'); };
 process.on('exit', stop);
 process.on('SIGINT', () => { stop(); process.exit(130); });
 
+const env = { ...process.env };
 let code = 1;
 try {
-  const base = `http://127.0.0.1:${port}/admin/links/`;
-  await waitFor(base, 120_000);
-  code = run('npx', ['playwright', 'test', ...process.argv.slice(2)], {
-    env: { ...process.env, E2E_BASE_URL: base },
-  }).status ?? 1;
+  const waits = [];
+  for (const [name, mode] of Object.entries(MODES)) {
+    const port = await freePort();
+    servers.push(spawn('node', ['examples/express/server.js'], {
+      env: { ...process.env, PORT: String(port), SHORTY_RENAME: mode },
+      stdio: ['ignore', 'ignore', 'inherit'],
+    }));
+    env[name] = `http://127.0.0.1:${port}/admin/links/`;
+    waits.push(waitFor(env[name], 120_000));
+  }
+  await Promise.all(waits);
+  code = run('npx', ['playwright', 'test', ...process.argv.slice(2)], { env }).status ?? 1;
 } finally {
   stop();
 }

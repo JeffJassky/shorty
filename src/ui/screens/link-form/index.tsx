@@ -73,7 +73,7 @@ function LinkForm({ initialLink, config, onClose }: {
   const [destError, setDestError] = React.useState<string | null>(null);
   const [saveError, setSaveError] = React.useState<SaveError | null>(null);
   const [saving, setSaving] = React.useState(false);
-  const [confirm, setConfirm] = React.useState<null | 'discard' | 'rename'>(null);
+  const [confirm, setConfirm] = React.useState<null | 'discard' | 'rename' | 'archive'>(null);
   const [slugState, setSlugState] = React.useState<SlugState>({ kind: 'idle' });
 
   const patch: Patch = React.useCallback((p) => { setDraft((d) => ({ ...d, ...p })); setSaveError(null); }, []);
@@ -152,7 +152,8 @@ function LinkForm({ initialLink, config, onClose }: {
     setSaving(true);
     setSaveError(null);
     try {
-      const og = inspect.result?.og;
+      // A stale preview describes a different URL — never store it.
+      const og = inspect.stale ? undefined : inspect.result?.og;
       const saved = editing && link
         ? await client.updateLink(link.id, buildPatch(draft, link, config, og))
         : await client.createLink(buildCreate(draft, config, og));
@@ -190,6 +191,7 @@ function LinkForm({ initialLink, config, onClose }: {
   }, [dirty, onClose]);
 
   const archive = async () => {
+    setConfirm(null);
     if (!link) return;
     try {
       if (link.archived) await client.unarchiveLink(link.id); else await client.archiveLink(link.id);
@@ -199,6 +201,13 @@ function LinkForm({ initialLink, config, onClose }: {
       setSaveError({ code: errorCode(err) ?? 'internal_error', message: errorMessage(err) });
     }
   };
+
+  React.useEffect(() => {
+    if (!dirty) return;
+    const warn = (e: BeforeUnloadEvent) => { e.preventDefault(); };
+    window.addEventListener('beforeunload', warn);
+    return () => window.removeEventListener('beforeunload', warn);
+  }, [dirty]);
 
   const onKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); save(); }
@@ -358,7 +367,7 @@ function LinkForm({ initialLink, config, onClose }: {
 
           <footer className="sheet-foot">
             {editing && link && (
-              <button type="button" className="btn btn-ghost" onClick={archive}>
+              <button type="button" className="btn btn-ghost" onClick={() => (dirty ? setConfirm('archive') : void archive())}>
                 {link.archived ? 'Unarchive' : 'Archive'}
               </button>
             )}
@@ -371,6 +380,11 @@ function LinkForm({ initialLink, config, onClose }: {
 
       {confirm === 'discard' && (
         <Dialog title="Discard changes?" confirmLabel="Discard" cancelLabel="Keep editing" tone="danger" onConfirm={() => { setConfirm(null); onClose(); }} onCancel={() => setConfirm(null)}>
+          <p>Your changes haven&apos;t been saved.</p>
+        </Dialog>
+      )}
+      {confirm === 'archive' && (
+        <Dialog title="Discard changes?" confirmLabel={link?.archived ? 'Discard and unarchive' : 'Discard and archive'} cancelLabel="Keep editing" tone="danger" onConfirm={() => void archive()} onCancel={() => setConfirm(null)}>
           <p>Your changes haven&apos;t been saved.</p>
         </Dialog>
       )}
