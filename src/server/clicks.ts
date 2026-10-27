@@ -219,6 +219,15 @@ export function createClickService(ctx: ResolvedContext, hooks: HookRunner, coun
       }
     } catch (err) {
       failure('click pipeline', err);
+      // A failure after a delete must not leave the rows written before it.
+      if (updated) {
+        await Link.exists({ _id: doc._id }).then(async (here) => {
+          if (here) return;
+          await Promise.all([
+            ClickModel.deleteMany({ linkId: doc._id }), Daily.deleteMany({ linkId: doc._id }), Seen.deleteMany({ linkId: doc._id }),
+          ]);
+        }).catch(() => undefined);
+      }
       return;
     }
 

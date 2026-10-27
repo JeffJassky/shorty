@@ -199,7 +199,42 @@ export function createLifecycle(ctx: ResolvedContext): Lifecycle {
     for (let i = 0; i < stale.length; i += REKEY_BATCH) {
       await Promise.all(stale.slice(i, i + REKEY_BATCH).map(rekeyOne));
     }
+    await sweepClaims();
     await writeMeta();
+  }
+
+  /**
+   * Claims must equal their link's `keys`, with only `slugKey` current. A crash
+   * between a re-key's Link write and its stale-claim delete leaves a link that
+   * `ck` no longer selects, so this walks every claim. Batched and idempotent.
+   */
+  async function sweepClaims(): Promise<void> {
+    const { Link, Slug } = models;
+    const flush = async (batch: Array<{ _id: string; linkId: LinkDoc['_id']; current: boolean }>): Promise<void> => {
+      const ids = [...new Set(batch.map((c) => String(c.linkId)))];
+      const links = (await Link.find({ _id: { $in: ids } }, { keys: 1, slugKey: 1 }).lean()) as unknown as
+        Array<Pick<LinkDoc, '_id' | 'keys' | 'slugKey'>>;
+      const byId = new Map(links.map((l) => [String(l._id), l]));
+      const ops: Array<Record<string, unknown>> = [];
+      for (const c of batch) {
+        const owner = byId.get(String(c.linkId));
+        if (!owner || !owner.keys.includes(c._id)) {
+          ops.push({ deleteOne: { filter: { _id: c._id, linkId: c.linkId } } });
+        } else if (c.current !== (c._id === owner.slugKey)) {
+          ops.push({ updateOne: { filter: { _id: c._id, linkId: c.linkId }, update: { $set: { current: c._id === owner.slugKey } } } });
+        }
+      }
+      if (ops.length) await Slug.bulkWrite(ops as never, { ordered: false });
+    };
+    let batch: Array<{ _id: string; linkId: LinkDoc['_id']; current: boolean }> = [];
+    for await (const raw of Slug.find({}, { linkId: 1, current: 1 }).lean().cursor()) {
+      batch.push(raw as never);
+      if (batch.length >= 500) {
+        await flush(batch);
+        batch = [];
+      }
+    }
+    if (batch.length) await flush(batch);
   }
 
   return {
