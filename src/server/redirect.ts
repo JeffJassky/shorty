@@ -229,8 +229,10 @@ export function createRedirect(
 
   async function handle(req: Request, res: Response, next: NextFunction): Promise<void> {
     if (req.method !== 'GET' && req.method !== 'HEAD') return next();
-    // Read before next(): leaving the mount restores req.url, and with it req.path.
-    const path = req.path;
+    // Read before next(): leaving the mount restores req.url. Taken from the
+    // raw URL rather than req.path — Express 4 collapses `//` after the mount,
+    // which would turn a non-slug into a lookup.
+    const path = req.originalUrl.split('?')[0].slice(req.baseUrl.length) || '/';
     const key = keyOf(path);
     if (key === null) return next();
 
