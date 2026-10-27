@@ -3,6 +3,7 @@ import express from 'express';
 import type { NextFunction, Request, Response } from 'express';
 import mongoose from 'mongoose';
 import request from 'supertest';
+import { createShorty } from '../src/server/index.js';
 import {
   BOT_UA,
   CRAWLER_UA,
@@ -737,5 +738,154 @@ describe('lookup failure (DB down)', () => {
       for (const method of ['findOne', 'find', 'aggregate']) delete coll[method];
     }
     await h.shorty.drain();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// End review (a) follow-ups — hot-path hardening (PR 8)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('End review (a) follow-ups', () => {
+  /** A host app around `shorty.redirect` whose error handler answers 599. */
+  function withErrorHandler(router: express.Router) {
+    const app = express();
+    const errors: unknown[] = [];
+    app.use('/go', router);
+    app.use((_req: Request, res: Response) => { res.status(404).send('host 404'); });
+    app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
+      errors.push(err);
+      res.status(599).type('text').send(`host error: ${err.message}`);
+    });
+    return { app, errors };
+  }
+
+  describe('lookup budget (redirect.lookupTimeoutMs)', () => {
+    it('waits out mongoose buffering (~10 s) when the connection never opened, instead of next(err) at once', async () => {
+      const conn = mongoose.createConnection('mongodb://127.0.0.1:1/shorty-unreachable', { serverSelectionTimeoutMS: 30_000 });
+      conn.on('error', () => {});
+      const shorty = createShorty({
+        connection: conn, publicBaseUrl: 'http://short.test/go', pepper: 'p',
+        modelPrefix: 'Unreachable', collectionPrefix: 'unreachable_',
+        redirect: { lookupTimeoutMs: 500 },
+      });
+      const { app, errors } = withErrorHandler(shorty.redirect);
+      const started = Date.now();
+      try {
+        const res = await request(app).get('/go/spring').set('User-Agent', HUMAN_UA).timeout(5000);
+        expect(res.status).toBe(599);
+        expect(Date.now() - started).toBeLessThan(3000);
+        expect(errors[0]).toBeInstanceOf(Error);
+      } finally {
+        // Don't wait for buffered commands to flush against a server that isn't there.
+        void conn.close(true).catch(() => undefined);
+      }
+    });
+
+    it('hangs on a lookup that never settles instead of next(err) once the budget runs out', async () => {
+      const { h } = await setup({ config: { redirect: { lookupTimeoutMs: 300 } } });
+      const { app, errors } = withErrorHandler(h.shorty.redirect);
+      const coll = h.shorty.models.Link.collection as unknown as Record<string, unknown>;
+      const stuck = () => new Promise(() => {});
+      for (const method of ['findOne', 'find', 'aggregate']) coll[method] = stuck;
+      const started = Date.now();
+      try {
+        const res = await request(app).get('/go/spring').set('User-Agent', HUMAN_UA).timeout(3000);
+        expect(res.status).toBe(599);
+        expect(Date.now() - started).toBeLessThan(2000);
+        expect(errors[0]).toBeInstanceOf(Error);
+      } finally {
+        for (const method of ['findOne', 'find', 'aggregate']) delete coll[method];
+      }
+      await h.shorty.drain();
+    });
+  });
+
+  describe('malformed escapes in the forwarded query', () => {
+    it('double-encodes the valid escapes in a value that also holds a malformed one', async () => {
+      const { h } = await setup();
+      const res = await get(h, '/go/spring?x=%E2%9C%93%ZZ');
+      expect(res.status).toBe(302);
+      expect(res.headers.location).toBe(`${DEST}&x=%E2%9C%93%ZZ`);
+    });
+
+    it('re-encodes the % of a malformed key or overlong UTF-8 value', async () => {
+      const { h } = await setup();
+      const res = await get(h, '/go/spring?%zz=1&y=%C0%AF');
+      expect(res.headers.location).toBe(`${DEST}&%zz=1&y=%C0%AF`);
+    });
+
+    it('stops decoding well-formed parts next to a malformed one', async () => {
+      const { h } = await setup();
+      const res = await get(h, '/go/spring?a=caf%C3%A9&b=100%');
+      expect(res.headers.location).toBe(`${DEST}&a=caf%C3%A9&b=100%`);
+    });
+  });
+
+  describe("cache headers on shorty's own 404 / 410", () => {
+    it("lets the onMiss: 'notFound' 404 be cached", async () => {
+      const { h } = await setup({ config: { redirect: { onMiss: 'notFound' } } });
+      const res = await get(h, '/go/nolink');
+      expect(res.status).toBe(404);
+      expect(res.headers['cache-control']).toBe('private, max-age=0');
+    });
+
+    it('lets the expired 410 page be cached', async () => {
+      const h = await harness();
+      await h.shorty.createLink({ url: DEST, slug: 'spring', expiresAt: new Date(h.clock.now.getTime() + HOUR) });
+      h.clock.advance(2 * HOUR);
+      const res = await get(h, '/go/spring');
+      expect(res.status).toBe(410);
+      expect(res.headers['cache-control']).toBe('private, max-age=0');
+    });
+
+    it("lets the expired onExpired: 'notFound' 404 be cached", async () => {
+      const h = await harness({ config: { redirect: { onExpired: 'notFound' } } });
+      await h.shorty.createLink({ url: DEST, slug: 'spring', expiresAt: new Date(h.clock.now.getTime() + HOUR) });
+      h.clock.advance(2 * HOUR);
+      const res = await get(h, '/go/spring');
+      expect(res.status).toBe(404);
+      expect(res.headers['cache-control']).toBe('private, max-age=0');
+    });
+  });
+
+  describe('Vary: User-Agent (crawler card vs redirect from one URL)', () => {
+    it.each([301, 302, 307, 308] as const)('omits Vary: User-Agent on a %i link redirect', async (status) => {
+      const { h } = await setup({}, { redirect: { status } });
+      const res = await get(h, '/go/spring');
+      expect(res.status).toBe(status);
+      expect(res.headers.vary ?? '').toMatch(/(^|,\s*)User-Agent(\s*,|$)/i);
+    });
+
+    it('omits Vary: User-Agent on the crawler social card', async () => {
+      const { h } = await setup({}, { social: { title: 'Spring sale' } });
+      const res = await get(h, '/go/spring', CRAWLER_UA);
+      expect(res.status).toBe(200);
+      expect(res.headers.vary ?? '').toMatch(/(^|,\s*)User-Agent(\s*,|$)/i);
+    });
+  });
+});
+
+describe('PR 8 review follow-ups — no in-band markers in Location', () => {
+  const MARKERS = ['__shorty_pct__', '__pct__', 'PCT', '\u0000pct'];
+
+  it.each(MARKERS.filter((m) => !m.includes('\u0000')))('does not rewrite a forwarded value that happens to contain %s', async (m) => {
+    const { h } = await setup({}, { url: 'https://acme.com/s?u=1', slug: 'mk' });
+    const res = await get(h, `/go/mk?x=${encodeURIComponent(m)}&${encodeURIComponent(m)}=1`);
+    expect(res.status).toBe(302);
+    const loc = new URL(res.headers.location);
+    expect(loc.searchParams.get('x')).toBe(m);
+    expect(loc.searchParams.get(m)).toBe('1');
+  });
+
+  it('does not rewrite a destination path that contains a marker-like string, with or without forwarding', async () => {
+    const { h } = await setup({ config: { redirect: { forwardQuery: false } } }, { url: 'https://acme.com/__shorty_pct__/x', slug: 'mp' });
+    const res = await get(h, '/go/mp');
+    expect(res.headers.location).toBe('https://acme.com/__shorty_pct__/x');
+  });
+
+  it('still forwards a malformed escape verbatim beside a marker-like value', async () => {
+    const { h } = await setup({}, { url: 'https://acme.com/s', slug: 'mv' });
+    const res = await get(h, '/go/mv?a=%ZZ&b=__shorty_pct__');
+    expect(res.headers.location).toBe('https://acme.com/s?a=%ZZ&b=__shorty_pct__');
   });
 });

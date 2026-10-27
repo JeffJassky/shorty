@@ -94,13 +94,13 @@ const slug: SlugConfig = {
 };
 const modes: RenameMode[] = ['alias', 'untilClicked', 'always', 'never'];
 const redirect: RedirectConfig = {
-  status: 307, forwardQuery: false, noindex: false, onMiss: 'https://acme.com', onExpired: 'notFound',
+  status: 307, forwardQuery: false, noindex: false, onMiss: 'https://acme.com', onExpired: 'notFound', lookupTimeoutMs: 1500,
 };
 // @ts-expect-error 303 is not a supported redirect status
 const badStatus: RedirectStatus = 303;
 const destinations: DestinationConfig = { allowedHosts: ['acme.com', /\.acme\.com$/], blockedHosts: [/evil/] };
 const geo = (req: Request): GeoResult | null => ({ country: String(req.headers['x-country'] ?? '') });
-const clicks: ClickConfig = { retentionDays: 30, uniqueWindowMinutes: 15, timezone: 'America/New_York', geo, ip: (req) => req.ip };
+const clicks: ClickConfig = { retentionDays: 30, uniqueWindowMinutes: 15, timezone: 'America/New_York', geo, ip: (req) => req.ip, maxInFlight: 500 };
 const inspect: InspectConfig = {
   timeoutMs: 1000, maxBytes: 1024, maxRedirects: 2, lookup: async () => ['93.184.216.34'],
   isAllowedAddress: () => true, userAgent: 'x',
@@ -136,7 +136,7 @@ async function boot(s: ShortyInstance) {
   await s.ready();
   await s.drain();
   const h: ShortyHealth = s.health();
-  const n: number = h.clickFailures + h.hookFailures + h.misses + h.inFlight;
+  const n: number = h.clickFailures + h.hookFailures + h.misses + h.inFlight + h.dropped;
   const on: boolean = h.clicksEnabled;
   void [r, routes, ui, n, on];
 }

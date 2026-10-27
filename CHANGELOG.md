@@ -10,6 +10,7 @@ real if CI runs the matrix. See standards/traps.md #10.
 ## [Unreleased]
 
 ### Added
+- Hot-path hardening: the link lookup is bounded by `redirect.lookupTimeoutMs` (and fails at once on a closed connection); `clicks.maxInFlight` skips and counts (`health().dropped`) pipelines past the cap; malformed escapes in forwarded query parts go through verbatim; `queryKeys` is capped at 20 keys of 64 chars; `Vary: User-Agent` on every redirect and card, `Cache-Control: private, max-age=0` on shorty's own 404 / 410.
 - Initial extraction.
 - Public redirect router (`shorty.redirect`): slug lookup, expiry, social cards for crawlers, query forwarding, `onMiss` handling.
 - Click pipeline after the response: bot/human split, unique window, daily rollups, `onClick` / `track`, `drain()` and `health()`.
