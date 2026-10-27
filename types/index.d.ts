@@ -177,7 +177,11 @@ export interface Link extends UrlParts {
   tags: string[];
   redirect: LinkRedirectOverrides;
   expiresAt?: Date;
-  /** Expire after this many HUMAN clicks. */
+  /**
+   * Expire after this many HUMAN clicks. Best-effort: counting happens after
+   * the response, so concurrent (or very fast sequential) hits can overshoot by
+   * the number in flight. Use `expiresAt` when the limit must be exact.
+   */
   maxClicks?: number;
   /** Where an expired link sends people. Overrides `redirect.onExpired`. Non-http(s) → `validation`. */
   expiredUrl?: string;
@@ -819,7 +823,11 @@ export interface ShortyInstance {
    * `caseSensitive` changed. Idempotent. Await once at boot — traps #3.
    */
   ready(): Promise<void>;
-  /** Resolves when every in-flight click AND miss pipeline has finished. For shutdown and tests. */
+  /**
+   * Resolves when every in-flight click AND miss pipeline has finished —
+   * including the host's own `onClick` / `onMiss`, so a hook that never settles
+   * keeps `drain()` waiting. For shutdown and tests.
+   */
   drain(): Promise<void>;
   health(): ShortyHealth;
 
