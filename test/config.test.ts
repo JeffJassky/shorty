@@ -208,3 +208,48 @@ describe('models', () => {
     expect(createShorty(cfg).models.Link).toBe(first.models.Link);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// End review (a) follow-ups — hot-path hardening (PR 8)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('End review (a) follow-ups', () => {
+  it.each(['notfound', 'next ', 'Next', '/missing', 'missing.html', 'ftp://acme.com/x', 'javascript:alert(1)', ''])(
+    'accepts redirect.onMiss %j (neither a mode nor an absolute http(s) URL) and later 302s to it',
+    (onMiss) => {
+      expect(() => make({ redirect: { onMiss } })).toThrow(TypeError);
+      expect(() => make({ redirect: { onMiss } })).toThrow(/redirect\.onMiss/);
+    },
+  );
+
+  it.each(['next', 'Page', 'notfound', '/ended', 'mailto:a@b.c', ''])(
+    'accepts redirect.onExpired %j (neither a mode nor an absolute http(s) URL) and later 302s to it',
+    (onExpired) => {
+      expect(() => make({ redirect: { onExpired } })).toThrow(TypeError);
+      expect(() => make({ redirect: { onExpired } })).toThrow(/redirect\.onExpired/);
+    },
+  );
+
+  it('rejects the valid onMiss / onExpired values', () => {
+    for (const onMiss of ['next', 'notFound', 'https://acme.com/missing', 'http://acme.com']) {
+      expect(() => make({ redirect: { onMiss } })).not.toThrow();
+    }
+    for (const onExpired of ['page', 'notFound', 'https://acme.com/ended']) {
+      expect(() => make({ redirect: { onExpired } })).not.toThrow();
+    }
+  });
+
+  it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY])('accepts redirect.lookupTimeoutMs %s', (lookupTimeoutMs) => {
+    expect(() => make({ redirect: { lookupTimeoutMs } })).toThrow(TypeError);
+    expect(() => make({ redirect: { lookupTimeoutMs } })).toThrow(/redirect\.lookupTimeoutMs/);
+  });
+
+  it.each([0, -1, 1.5, Number.NaN])('accepts clicks.maxInFlight %s', (maxInFlight) => {
+    expect(() => make({ clicks: { maxInFlight } })).toThrow(TypeError);
+    expect(() => make({ clicks: { maxInFlight } })).toThrow(/clicks\.maxInFlight/);
+  });
+
+  it('rejects valid lookupTimeoutMs / maxInFlight', () => {
+    expect(() => make({ redirect: { lookupTimeoutMs: 1 }, clicks: { maxInFlight: 1 } })).not.toThrow();
+  });
+});
