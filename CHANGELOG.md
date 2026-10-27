@@ -9,15 +9,24 @@ real if CI runs the matrix. See standards/traps.md #10.
 
 ## [Unreleased]
 
+First release (0.1.0).
+
 ### Added
-- Initial extraction.
-- Public redirect router (`shorty.redirect`): slug lookup, expiry, social cards for crawlers, query forwarding, `onMiss` handling.
-- Click pipeline after the response: bot/human split, unique window, daily rollups, `onClick` / `track`, `drain()` and `health()`.
-- Runtime dependencies `isbot` and `ua-parser-js@1` (pinned below 2: v2 is AGPL).
-- Admin JSON API (`shorty.routes`), stats (humans and bots always separate), live param-suggestion catalog.
-- Integrity under concurrency: every link carries a write version (`wv`) that `updateLink` pins, so renames and edits planned from a stale read are re-planned; renames never release a claim the link may hold (lost acks included); a case-only slug change just updates the display form; redirect patches write only the fields they name; deletes racing updates or clicks leave no orphan history, click or daily rows.
-- Case-mode stamp (`ck`) per link: `ready()` re-keys every link written under the other mode on every boot, checks collisions across all links first, and sweeps stale claims, so rolling deploys across a `caseSensitive` flip converge on the last instance to boot.
-- Inspect hardening: the default address policy now allows only IPv6 2000::/3 minus special-purpose blocks (and refuses 192.88.99.0/24); `ScreenshotAdapter` receives `ctx.addresses` (the checked IPs) and remains responsible for its own egress policy; head-stop parsing is linear.
+- `createShorty(config)` returning `redirect`, `routes`, `ui()` and a programmatic API (`createLink`, `updateLink`, `archiveLink`, `unarchiveLink`, `deleteLink`, `link`, `links`, `history`, `stats`, `paramValues`, `tags`, `checkSlug`, `generateSlug`, `inspect`, `shortUrl`, `recount`), plus `ready()`, `drain()` and `health()`.
+- Public redirect router: GET/HEAD only, any mount position and route order (`onMiss: 'next'` by default), expiry (date and best-effort `maxClicks`), query forwarding, custom social cards served to crawlers, `X-Robots-Tag: noindex`.
+- Structured destinations (`baseUrl`, `utm`, `params`, `hash`), shared `composeUrl` / `parseUrl`, a destination revision history, and a live parameter-suggestion catalog.
+- Slugs: generated or custom, case-insensitive by default, four rename modes (`alias`, `untilClicked`, `always`, `never`), claim-based uniqueness across slugs and aliases, and `ready()` re-keying across a `caseSensitive` flip.
+- Click analytics: pipeline that runs after the response, daily-rotating HMAC visitor hash (no IP stored), unique window, bot/human split everywhere, daily rollups kept forever, TTL'd raw clicks, `onClick` / `track`.
+- Stats API and UI with humans and bots always separate; breakdowns for referrer, country, device, browser, OS and QR vs link; overview with top links and top campaigns.
+- Admin JSON API (`shorty.routes`) and typed fetch client (`@jeffjassky/shorty/client`).
+- Admin UI: links list, create/edit form with anatomy panel, comboboxes and previews (social cards, destination health, QR, optional screenshot), link detail, analytics overview. Hand-rolled SVG charts, light and dark themes, usable at 375px.
+- `inspect`: SSRF-hardened destination fetch (DNS resolved once per hop and pinned, address policy allowing public unicast only, `isAllowedAddress` override, linear head parsing); `ScreenshotAdapter` receives the checked `addresses` and owns its own egress policy.
+- Integrity under concurrency: every link carries a write version (`wv`) that `updateLink` pins; claims are released only after confirming the link does not hold them; deletes racing updates or clicks leave no orphan rows; per-link case-mode stamp (`ck`) re-keyed on every boot.
+- Hooks (`onClick`, `onCreate`, `onUpdate`, `onArchive`, `onDelete`, `onMiss`), `track`, `resolveUser`, `geo`, `ip` adapters.
+- Documentation site, Playwright end-to-end suite (run in CI), runnable example host.
+
+### Dependencies
+- Runtime: `isbot`, `ua-parser-js@1` (pinned below 2: v2 is AGPL).
 
 ### Requirements
-- MongoDB 5.2+ (`$firstN` in the param catalog).
+- Node 20+, MongoDB 5.2+ (`$firstN` in the param catalog), mongoose 7 to 9, Express 4.18+ or 5.

@@ -1,18 +1,18 @@
 # shorty
 
-> `/scaffold` renames this file to `README.md`. The template's own README —
-> the one explaining tokens and settled divergences — stays behind in foundry.
+Self-hosted short links for Express + MongoDB: a UTM builder, click analytics
+and a React admin UI, embedded in your own app. No third-party service, no
+Redis, no worker.
 
-Self-hosted short links for Express + MongoDB: UTM builder, click analytics, React admin UI
-
-npm renders this file, and it goes stale faster than anything else in the repo.
-`standards/done.md` gates on it reflecting the final API.
+- Redirect router you can mount at a path, at `/`, or on its own host, in any route order
+- Structured destinations (base URL, UTM fields, parameters, hash) with suggestions and near-duplicate lint
+- Safe editing: destination revisions, and slug renames that keep old links working
+- Click analytics with no stored IPs, a daily-rotating visitor hash, and bots counted separately
+- Prebuilt admin UI (list, form with live previews, link detail, analytics); SSRF-hardened link inspection
 
 ```bash
 npm install @jeffjassky/shorty
 ```
-
-## Quick start
 
 ```js
 import express from 'express';
@@ -21,54 +21,36 @@ import { createShorty } from '@jeffjassky/shorty';
 
 await mongoose.connect(process.env.MONGO_URL);
 
-const pkg = createShorty({
+const shorty = createShorty({
   connection: mongoose,
-  resolveUser: (req) => req.user && {
-    id: req.user._id,
-    email: req.user.email,
-    displayName: req.user.name,
-    isAdmin: req.user.role === 'admin',
-  },
+  publicBaseUrl: 'https://acme.com/go',
+  pepper: process.env.SHORTY_PEPPER,   // enables click recording
 });
-
-await pkg.model.createIndexes();
+await shorty.ready();
 
 const app = express();
-app.use(express.json());          // yours, not ours
-
-app.use('/api/shorty', requireAuth, pkg.routes);
-app.use('/shorty',    requireAuth, pkg.ui({ mountPath: '/shorty' }));
-
-app.use('/api/shorty/admin', requireAuth, requireAdmin, pkg.adminRoutes);
-app.use('/admin/shorty',    requireAuth, requireAdmin,
-        pkg.adminUi({ mountPath: '/admin/shorty' }));
+app.use(express.json());
+app.use('/go', shorty.redirect);                                   // public
+app.use('/admin/links/api', requireAdmin, shorty.routes);          // your guard
+app.use('/admin/links', requireAdmin, shorty.ui({ mountPath: '/admin/links', apiBase: '/admin/links/api' }));
 ```
 
-Full docs: **https://jeffjassky.github.io/shorty/**
+`requireAdmin` is yours: shorty trusts whoever reaches `routes` and `ui()`.
 
-## The one thing to get right
-
-`isAdmin` from your adapter **gates nothing**. shorty cannot know what admin
-means in your app, so it refuses nobody — your middleware is the entire
-boundary around `adminRoutes` and `adminUi()`.
-
-Copy `examples/admin-guard.test.js` into your suite. It has to live in your
-repo, because it is the only thing that catches a refactor dropping the guard.
+**Documentation: https://jeffjassky.github.io/shorty/**
 
 ## Requirements
 
-Node 20+, Express 4.18+/5, Mongoose 7/8/9. Both are peer dependencies — all
-three Mongoose majors run the full suite in CI.
+Node 20+, MongoDB 5.2+, mongoose 7, 8 or 9, Express 4.18+ or 5 (mongoose and
+Express are peer dependencies; CI runs the suite on all three mongoose majors).
 
 ## Development
 
 ```bash
 npm install
-npm run check-tracked   # run this FIRST — a global gitignore can eat source files
-npm run typecheck
-npm run build           # server, then the UI bundle into dist/ui
-npm test                # after build: the UI tests assert against the bundle
-node examples/express/server.js   # imports dist/, so build first
+npm run check-tracked && npm run typecheck && npm run build && npm test
+npm run test:e2e          # Playwright against examples/express/server.js
+npm run docs:dev
 ```
 
 ## License

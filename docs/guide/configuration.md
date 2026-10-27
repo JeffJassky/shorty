@@ -1,63 +1,91 @@
 # Configuration
 
-Every option has a working default except the connection.
+`createShorty(config)` takes a `CreateShortyConfig`. Only `connection` and
+`publicBaseUrl` are required. Invalid values throw at creation, not at the
+first request. The authoritative declarations, with full doc comments, are in
+[`types/index.d.ts`](../reference/types).
 
-```js
-createShorty({
-  connection: mongoose,
-  resolveUser,
-});
-```
+## Top level
 
-## Database
-
-| Option | Default | |
+| Key | Default | Notes |
 |---|---|---|
-| `connection` | the global `mongoose` | Mongoose instance or connection |
-| `modelName` | `Link` | **Set this when a collision is plausible** — see below |
-| `collection` | derived from `modelName` | Explicit collection name |
-| `userRef` | `User` | The model your stored user ids point at |
-| `model` | — | A compiled model, bypassing the factory entirely |
+| `connection` | required | A mongoose `Connection` or the `mongoose` module. |
+| `publicBaseUrl` | required | Where `redirect` is reachable as the browser sees it. Absolute http(s); trailing slash trimmed. Never inferred. |
+| `collectionPrefix` | `'shorty_'` | MongoDB collection prefix. |
+| `modelPrefix` | `'Shorty'` | Mongoose model-name prefix. Set it when two instances share a connection. |
+| `pepper` | `SHORTY_PEPPER` env | Visitor-hash secret. Without one, click recording is off (one warning). |
+| `clicks` | on (with a pepper) | `false` disables recording; or a [click config](#clicks). |
+| `listLimit` | `200` | Max rows per list page. |
+| `now` | `() => new Date()` | Clock, for tests and replays. |
+| `logger` | none | `{ debug, info, warn, error }`, each optional. |
+| `resolveUser` | none | `(req) => { id, name? } \| null`; stamps `createdBy` / `updatedBy`. `defaultResolveUser` is exported. |
+| `screenshot` | none | [Screenshot adapter](./inspect). The UI hides the Screenshot tab without it. |
+| `ui` | `{}` | Defaults merged into every `ui()` call. |
+| hooks | none | `onClick`, `onCreate`, `onUpdate`, `onArchive`, `onDelete`, `onMiss`, `track`. See [Hooks & telemetry](./hooks). |
 
-### Why `modelName` matters
+## `slug`
 
-Mongoose keeps compiled models in a registry on the connection, and claiming a
-name twice throws `OverwriteModelError`. A library cannot own a global name
-unconditionally, so shorty **reuses an already-compiled model** when the name
-is taken.
-
-The tradeoff is the whole reason this option exists: if that existing model
-isn't ours, queries fail confusingly rather than loudly. If your app already has
-a model called `Link`, set `modelName` and stop thinking about it.
-
-## Limits
-
-| Option | Default | |
+| Key | Default | Notes |
 |---|---|---|
-| `listLimit` | `200` | Hard cap on public list reads |
-| `adminListLimit` | `500` | Hard cap on admin list reads |
+| `length` | `7` | Generated length, integer 3 to 190. |
+| `alphabet` | `'23456789abcdefghjkmnpqrstuvwxyz'` | At least 2 distinct characters. |
+| `generate` | none | Overrides length and alphabet. Validated and collision-checked. |
+| `reserved` | `[]` | Strings (whole slug) or RegExps. **Extends** the built-in list. |
+| `caseSensitive` | `false` | Set before your first link. See [Slugs & renaming](./slugs). |
+| `rename` | `'alias'` | `'alias' \| 'untilClicked' \| 'always' \| 'never'`. |
 
-These are **caps, not defaults you can exceed**. A caller asking for more gets
-the cap, and the response reports the `limit` actually applied. An unbounded
-read against a collection whose size your customers control is an outage.
+## `redirect`
 
-## Adapters
-
-| Option | Default | |
+| Key | Default | Notes |
 |---|---|---|
-| `resolveUser` | reads `req.authUserId` / `req.user` | [User adapter](/guide/user-adapter), shorthand form |
-| `userAdapter` | — | Same, object form. Passing both throws. |
-| `logger` | no-op | `{ debug, info, warn, error }` — all optional |
-| `track` | no-op | Optional analytics seam |
+| `status` | `302` | `301 \| 302 \| 307 \| 308`. Per-link override wins. |
+| `forwardQuery` | `true` | Append incoming params to the destination. Per-link override. |
+| `noindex` | `true` | Send `X-Robots-Tag: noindex` on every redirect. |
+| `onMiss` | `'next'` | `'next'`, `'notFound'`, or an absolute URL (302). |
+| `onExpired` | `'page'` | `'page'` (410 + HTML), `'notFound'`, or a URL. A link's `expiredUrl` wins. |
+| `lookupTimeoutMs` | set in 0.1 | **0.1.** Bounds the slug lookup so a slow database cannot hold redirects open. |
 
-### `track` is an optional peer, not a dependency
+## `destinations`
 
-If you run our telemetry package, wire it in:
+| Key | Default | Notes |
+|---|---|---|
+| `allowedHosts` | unset (any public http(s) host) | Strings match the hostname exactly; RegExps test it. |
+| `blockedHosts` | `[]` | Same matching. Refused with `host_blocked`. |
 
-```js
-createShorty({ track: telemetry.track });
-```
+A destination that points at `publicBaseUrl` itself (or anything under it) is
+refused with `destination_loop`.
 
-If you don't, leave it out and nothing is recorded. Installing this package must
-never drag in an analytics engine and a second Mongo collection — that is the
-rule for every cross-package seam here.
+## `clicks`
+
+Pass `false` to disable recording, or an object:
+
+| Key | Default | Notes |
+|---|---|---|
+| `retentionDays` | `395` | Raw click TTL; must be > 0. Daily rollups are kept forever. |
+| `uniqueWindowMinutes` | `60` | Unique-visitor window; must be > 0. |
+| `timezone` | `'UTC'` | IANA zone that defines a "day" for rollups and stats ranges. |
+| `geo` | CDN headers | `(req) => { country?, region?, city? }`. Default reads `cf-ipcountry`, `x-vercel-ip-country`, `cloudfront-viewer-country` (country only). No GeoIP database ships. |
+| `ip` | `req.ip` | `(req) => string`. You own `trust proxy`. |
+| `maxInFlight` | set in 0.1 | **0.1.** Caps click pipelines running at once. Hits beyond it are counted in `health().dropped` rather than queued. |
+
+## `inspect`
+
+| Key | Default | Notes |
+|---|---|---|
+| `timeoutMs` | `5000` | Whole-inspect budget: DNS, every hop, the screenshot adapter. |
+| `maxBytes` | `2_000_000` | Body read cap. Reading also stops at `</head>`. |
+| `maxRedirects` | `5` | Hops followed. |
+| `lookup` | `dns.promises.lookup` | `(host) => Promise<string[]>`. Every address is checked. |
+| `isAllowedAddress` | public unicast only | `(ip) => boolean`. See [Link previews & SSRF](./inspect). |
+| `userAgent` | `'shorty-inspect (+link preview)'` | |
+
+## `ui()` options
+
+| Key | Default | Notes |
+|---|---|---|
+| `mountPath` | `'/shorty'` | Where `ui()` is mounted, as the browser sees it. |
+| `apiBase` | `'/api/shorty'` | Where `routes` is mounted, as the browser sees it. |
+| `title` | `'Links'` | Brand name in the top bar. |
+| `spaDir` | bundled | Override the built SPA directory. |
+| `loginUrl` | `null` | Where to send someone whose session expires mid-page. `null` shows an inline error. |
+| `returnParam` | `'next'` | Query parameter carrying the return URL to `loginUrl`. |

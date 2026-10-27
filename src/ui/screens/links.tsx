@@ -81,7 +81,14 @@ function Row({ link, onArchive, onQr, onDuplicate }: {
   const dest = hostAndPath(link.destination);
   const title = link.title || `${dest.host}${dest.path}`;
   return (
-    <li className={'link-row' + (link.archived ? ' archived' : '')}>
+    <li
+      className={'link-row' + (link.archived ? ' archived' : '')}
+      onClick={(e) => {
+        // Row click opens the detail; the title link, copy button and menu keep their own behaviour.
+        if ((e.target as HTMLElement).closest('a,button,input,[role="menu"],[role="menuitem"],.tip-bubble')) return;
+        navigate(hrefs.detail(link.id));
+      }}
+    >
       <div className="cell cell-main">
         <span className="fav" aria-hidden="true">
           {link.og?.favicon
@@ -90,7 +97,7 @@ function Row({ link, onArchive, onQr, onDuplicate }: {
         </span>
         <div className="main-text">
           <div className="title-line">
-            <a className="link-title" href={hrefs.edit(link.id)} title={title}>{title}</a>
+            <a className="link-title" href={hrefs.detail(link.id)} title={title}>{title}</a>
             {link.archived && <span className="pill neutral">Archived</span>}
           </div>
           <div className="short-line">

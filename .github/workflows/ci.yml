@@ -64,3 +64,21 @@ jobs:
       # to check here. See standards/traps.md #7.
       - name: import.meta.url shim survived the tsup bump
         run: node -e "const p=require('./dist/index.cjs'); if (typeof p.defaultSpaDir() !== 'string') process.exit(1)"
+
+  # Browser end-to-end tests (Playwright against examples/express/server.js).
+  # Separate from the peer matrix: one run is enough, it needs a browser
+  # download, and it must not slow or break the matrix jobs.
+  e2e:
+    runs-on: ubuntu-latest
+    name: e2e (chromium)
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npx playwright install --with-deps chromium
+      # test:e2e rebuilds (cheap) and starts one example host per rename mode.
+      - run: npm run test:e2e
