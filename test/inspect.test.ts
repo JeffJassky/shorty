@@ -1,5 +1,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import type http from 'node:http';
+import nodeHttp from 'node:http';
+import net from 'node:net';
 import https from 'node:https';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -888,5 +890,192 @@ describe('inspect — PR 3 review follow-ups', () => {
       expect(codes(r)).toContain('private_address');
       expect(t.connections()).toBe(0);
     });
+  });
+});
+
+describe('End review (b) follow-ups', () => {
+  // ── event-loop stall: the head-stop re-parse must stay linear ──────────────
+  // A chunked body opens a <script> that never closes, then streams thousands
+  // of tiny `<body` chunks. Every chunk passes the cheap `</head`/`<body`
+  // pre-filter while the tokenizer correctly says the head has not ended, so a
+  // reader that re-parses the whole buffer per chunk does O(n²) work inside
+  // ONE burst of socket reads — the deadline timer cannot fire and the whole
+  // process (redirects included) freezes. Measured before the fix: 24 s with no
+  // padding, 101 s with 100 KB of padding, against a 5 s budget.
+  async function startStaller(padding: number): Promise<{ port: number; close: () => Promise<void> }> {
+    const sockets = new Set<net.Socket>();
+    const server = net.createServer((sock) => {
+      sockets.add(sock);
+      sock.on('close', () => sockets.delete(sock));
+      sock.on('error', () => {});
+      sock.once('data', () => {
+        sock.write('HTTP/1.1 200 OK\r\ncontent-type: text/html\r\ntransfer-encoding: chunked\r\n\r\n');
+        const head = `<html><head><script>${'a'.repeat(padding)}`;
+        sock.write(`${Buffer.byteLength(head).toString(16)}\r\n${head}\r\n`);
+        const burst = Buffer.from('5\r\n<body\r\n'.repeat(20000));
+        const pump = (): void => { while (!sock.destroyed && sock.writable && sock.write(burst)); };
+        sock.on('drain', pump);
+        pump();
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    return {
+      port: (server.address() as AddressInfo).port,
+      close: () => new Promise<void>((resolve) => { for (const s of sockets) s.destroy(); server.close(() => resolve()); }),
+    };
+  }
+
+  /** Largest gap between 10 ms ticks, minus the tick — how long the loop was frozen. */
+  function lagProbe(): { stop: () => number } {
+    let max = 0;
+    let last = Date.now();
+    const tick = setInterval(() => { const now = Date.now(); max = Math.max(max, now - last - 10); last = now; }, 10);
+    return { stop: () => { clearInterval(tick); return max; } };
+  }
+
+  it.each([
+    ['no padding', 0],
+    ['100 KB of padding', 100_000],
+  ])('never stalls the event loop on many tiny chunked "<body" chunks after an unterminated <script> (%s)', async (_label, padding) => {
+    const staller = await startStaller(padding);
+    try {
+      const timeoutMs = 5000;
+      const shorty = await inspector({ isAllowedAddress: allowLoopback, timeoutMs });
+      const probe = lagProbe();
+      const { value: r, ms } = await timed(() => shorty.inspect(`http://127.0.0.1:${staller.port}/`));
+      const stall = probe.stop();
+      expect(stall).toBeLessThan(250);
+      expect(ms).toBeLessThan(timeoutMs + 1000);
+      expect(r.final?.status).toBe(200);
+    } finally {
+      await staller.close();
+    }
+  }, 300_000);
+
+  // ── default address table: v6 = 2000::/3 minus special-purpose blocks ──────
+  // A refused address must come back as `private_address` with nothing
+  // fetched. Before the fix these were "public": the inspect tried to connect
+  // (→ `unreachable`) — the short budget keeps that attempt bounded.
+  it.each([
+    ['3fff::1', 'documentation 3fff::/20 (RFC 9637)'],
+    ['3fff:fff:ffff::1', 'top of 3fff::/20'],
+    ['5f00::1', 'SRv6 SIDs 5f00::/16 (RFC 9602)'],
+    ['2001:2::1', 'benchmarking 2001:2::/48'],
+    ['2001:10::1', 'ORCHID 2001:10::/28'],
+    ['2001:20::1', 'ORCHIDv2 2001:20::/28'],
+    ['100:0:0:1::1', 'dummy prefix 100:0:0:1::/64 (RFC 9780)'],
+    ['::ffff:0:7f00:1', 'IPv4-translated ::ffff:0:0:0/96 (of 127.0.0.1)'],
+    ['::ffff:0:808:808', 'IPv4-translated ::ffff:0:0:0/96 (of a public v4)'],
+    ['::808:808', 'deprecated v4-compatible ::/96, even of a public v4'],
+    ['4000::1', 'unallocated, outside 2000::/3'],
+    ['::1:0:0:1', 'reserved ::/8, outside 2000::/3'],
+    ['e000::1', 'unallocated, outside 2000::/3'],
+    ['192.88.99.1', 'deprecated 6to4 relay anycast 192.88.99.0/24'],
+  ])('refuses a hostname that resolves to %s (%s) without connecting', async (addr) => {
+    const s = await site({ '/': page('<title>SECRET</title>') });
+    const shorty = await inspector({ timeoutMs: 300, lookup: async () => [addr] });
+    const r = await shorty.inspect(`http://sneaky.test:${s.port}/`);
+    expect(codes(r)).toContain('private_address');
+    expect(codes(r)).not.toContain('unreachable');
+    expect(r.chain).toEqual([]);
+    expect(r.final).toBeUndefined();
+    expect(s.hits).toEqual([]);
+  });
+
+  it.each([
+    ['2606:4700::1111', 'global unicast (Cloudflare)'],
+    ['2a00:1450:4001::1', 'global unicast (Google)'],
+    ['2001:4860:4860::8888', 'global unicast inside 2001::/16 but outside the special blocks'],
+    ['::ffff:808:808', 'v4-mapped public v4'],
+    ['64:ff9b::808:808', 'well-known NAT64 of a public v4'],
+  ])('does not refuse %s (%s)', async (addr) => {
+    // A real outbound attempt; the 300 ms budget bounds it. 'unreachable' is
+    // fine — only 'private_address' is wrong.
+    const shorty = await inspector({ timeoutMs: 300, lookup: async () => [addr] });
+    const r = await shorty.inspect('http://public.test:9/');
+    expect(codes(r)).not.toContain('private_address');
+  });
+
+  // ── screenshot adapter: gets the checked addresses so it can pin ───────────
+  it('hands the screenshot adapter the addresses the safe fetch checked and connected to', async () => {
+    const s = await site({ '/': page('<title>S</title>') });
+    const seen: Array<{ url: string; addresses: unknown }> = [];
+    const shorty = await inspector(
+      { isAllowedAddress: allowLoopback, lookup: async () => ['127.0.0.1'] },
+      { screenshot: async (url, ctx) => { seen.push({ url, addresses: ctx?.addresses }); return null; } },
+    );
+    await shorty.inspect(`http://public.test:${s.port}/`);
+    expect(seen).toEqual([{ url: `http://public.test:${s.port}/`, addresses: ['127.0.0.1'] }]);
+  });
+
+  it('hands the screenshot adapter the FINAL hop\'s addresses, not the first hop\'s', async (ctx) => {
+    // Second hop on ::1 so the two hops' addresses differ. Skips where the
+    // host has no v6 loopback.
+    const v6 = nodeHttp.createServer((_req, res) => { res.setHeader('content-type', 'text/html'); res.end('<title>B</title>'); });
+    const bound = await new Promise<boolean>((resolve) => {
+      v6.once('error', () => resolve(false));
+      v6.listen(0, '::1', () => resolve(true));
+    });
+    if (!bound) { ctx.skip(); return; }
+    try {
+      const v6port = (v6.address() as AddressInfo).port;
+      const s = await site({ '/': redirectTo(`http://b.test:${v6port}/`) });
+      const seen: unknown[] = [];
+      const shorty = await inspector(
+        {
+          isAllowedAddress: (ip) => ip === '127.0.0.1' || ip === '::1',
+          lookup: async (host) => (host === 'a.test' ? ['127.0.0.1'] : ['::1']),
+        },
+        { screenshot: async (_url, c) => { seen.push(c?.addresses); return null; } },
+      );
+      const r = await shorty.inspect(`http://a.test:${s.port}/`);
+      expect(r.final?.url).toBe(`http://b.test:${v6port}/`);
+      expect(seen).toEqual([['::1']]);
+    } finally {
+      await new Promise<void>((resolve) => v6.close(() => resolve()));
+    }
+  });
+
+  // ── proxy env: inspect must never go through a proxy ───────────────────────
+  // A proxy re-resolves the hostname itself, so the checked-address pinning
+  // would be bypassed. Node ≥ 22.21 honours HTTP(S)_PROXY via NODE_USE_ENV_PROXY
+  // / `Agent({ proxyEnv })` on the global agents; inspect must not use them.
+  it('never connects to an HTTP_PROXY/HTTPS_PROXY listener, even with env-proxy global agents', async () => {
+    let proxied = 0;
+    const proxy = net.createServer((sock) => {
+      proxied += 1;
+      sock.on('error', () => {});
+      sock.end('HTTP/1.1 200 OK\r\ncontent-type: text/html\r\ncontent-length: 20\r\n\r\n<title>PROXY</title>');
+    });
+    await new Promise<void>((resolve) => proxy.listen(0, '127.0.0.1', resolve));
+    const proxyUrl = `http://127.0.0.1:${(proxy.address() as AddressInfo).port}`;
+    const s = await site({ '/': page('<title>DIRECT</title>') });
+
+    const keys = ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy', 'NO_PROXY', 'no_proxy', 'NODE_USE_ENV_PROXY'] as const;
+    const savedEnv = Object.fromEntries(keys.map((k) => [k, process.env[k]]));
+    const savedAgents = { http: nodeHttp.globalAgent, https: https.globalAgent };
+    try {
+      for (const k of ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy']) process.env[k] = proxyUrl;
+      delete process.env.NO_PROXY;
+      delete process.env.no_proxy;
+      process.env.NODE_USE_ENV_PROXY = '1';
+      const proxyEnv = { HTTP_PROXY: proxyUrl, HTTPS_PROXY: proxyUrl };
+      nodeHttp.globalAgent = new nodeHttp.Agent({ proxyEnv } as nodeHttp.AgentOptions);
+      https.globalAgent = new https.Agent({ proxyEnv } as https.AgentOptions);
+
+      const shorty = await inspector({ isAllowedAddress: allowLoopback, lookup: async () => ['127.0.0.1'] });
+      const r = await shorty.inspect(`http://public.test:${s.port}/`);
+      expect(proxied).toBe(0);
+      expect(s.hits).toEqual(['/']);
+      expect(r.og.title).toBe('DIRECT');
+    } finally {
+      nodeHttp.globalAgent = savedAgents.http;
+      https.globalAgent = savedAgents.https;
+      for (const k of keys) {
+        if (savedEnv[k] === undefined) delete process.env[k];
+        else process.env[k] = savedEnv[k];
+      }
+      await new Promise<void>((resolve) => proxy.close(() => resolve()));
+    }
   });
 });

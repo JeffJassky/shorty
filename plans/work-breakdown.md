@@ -113,3 +113,36 @@ weakened/skipped · untested paths added · docs/CHANGELOG · `console.log`/TODO
 2. Safe-fetch SSRF.
 3. Rename modes + slug claims under concurrency, revisions, human/bot counter
    integrity.
+
+## PR 9 — inspect hardening (end review (b) follow-ups)
+
+- **Files:** `src/server/inspect/safe-fetch.ts`, `src/server/inspect/index.ts`
+  only. Do not touch `types/` or `test/` — the contract is settled.
+- **Contract:** `InspectConfig.isAllowedAddress` doc (the default table) and
+  `ScreenshotAdapter` in `types/index.d.ts`.
+- **Tests green:** `test/inspect.test.ts` › "End review (b) follow-ups" (18 red
+  now), whole suite green, `npm run typecheck` green. Today typecheck fails at
+  exactly one place, `src/server/inspect/index.ts` (the adapter call passes
+  one argument); fixing item 3 fixes it.
+- **Work:**
+  1. **Head-stop re-parse must be linear.** In `requestHop`'s `data` handler,
+     keep the cheap `</head`/`<body` pre-filter, but call `parseHead` only when
+     the buffered size has at least doubled since the last parse
+     (`let parsedAt = 0; … && size >= parsedAt * 2) { parsedAt = size; … }`).
+     `index.ts` parses the full head at the end anyway, so nothing is lost.
+     Without this, one destination freezes the event loop for 6–100 s.
+  2. **Default address table.**
+     - v4: also refuse 192.88.99.0/24.
+     - v6: after the `::ffff:0:0/96` (v4-mapped) check, refuse everything
+       outside 2000::/3 except 64:ff9b::/96 (judged by its embedded v4) —
+       this also refuses `::a.b.c.d` (drop the "deprecated v4-compatible"
+       branch), `::ffff:0:a.b.c.d`, 100:0:0:1::/64, 5f00::/16 and unallocated
+       space. Inside 2000::/3 also refuse 2001:2::/48, 2001:10::/28,
+       2001:20::/28 and 3fff::/20 (keep Teredo, 2001:db8::/32, 6to4 rules).
+  3. **Screenshot adapter context.** `safeFetch` returns the final hop's
+     checked `addresses`; `index.ts` calls `shoot(final.url, { addresses })`.
+- **Invariants:** unchanged — resolve once per hop, connect only to checked
+  addresses, `agent: false` (the proxy-env regression test pins this), one
+  deadline, never throws for network reasons.
+- **Reference:** a scratch implementation of exactly items 1–3 turned all 128
+  inspect tests and typecheck green.

@@ -621,9 +621,26 @@ export interface InspectConfig {
   /** DNS. Default `dns.promises.lookup(host, { all: true })`. Every address is checked. */
   lookup?: (hostname: string) => Promise<string[]>;
   /**
-   * Default rejects loopback, private, link-local (incl. 169.254.169.254),
-   * CGNAT, multicast, unspecified and reserved ranges, v4 and v6. Override for
-   * an intranet deployment that previews internal destinations.
+   * Every address a hop resolves to must pass, or nothing is fetched. The
+   * default allows public unicast only:
+   * - v4: refuses 0/8, 10/8, 100.64/10, 127/8, 169.254/16 (cloud metadata),
+   *   172.16/12, 192.0.0/24, 192.0.2/24, 192.88.99/24, 192.168/16, 198.18/15,
+   *   198.51.100/24, 203.0.113/24, 224/4 and above.
+   * - v6: allows ONLY 2000::/3, minus 2001::/32 (Teredo), 2001:2::/48,
+   *   2001:10::/28, 2001:20::/28, 2001:db8::/32, 2002::/16 embedding a refused
+   *   v4, and 3fff::/20. Outside 2000::/3 everything is refused (::, ::1,
+   *   ::/96 and ::ffff:0:0:0/96 forms, 100::/64, 100:0:0:1::/64, 5f00::/16,
+   *   fc00::/7, fe80::/10, fec0::/10, ff00::/8, unallocated space), except
+   *   ::ffff:0:0/96 and 64:ff9b::/96, which are judged by the v4 they embed
+   *   (64:ff9b:1::/48 is refused).
+   *
+   * Override for an intranet deployment that previews internal destinations.
+   *
+   * Deployment note: ports are not restricted on public hosts — a redirect may
+   * point at any port of any public address. A host whose own public IP is
+   * bound on a local interface (common on VPS providers), or that runs on a
+   * cloud with public-but-special endpoints (e.g. Azure's 168.63.129.16),
+   * should pass an `isAllowedAddress` that also refuses those addresses.
    */
   isAllowedAddress?: (ip: string) => boolean;
   /** Default `'shorty-inspect (+link preview)'`. */
@@ -632,10 +649,25 @@ export interface InspectConfig {
 
 /**
  * Called once per inspect with the FINAL url, only when the safe fetch reached
- * it (never for a private/blocked or unreachable destination). A throw or a
- * null → no screenshot; never fails the inspect.
+ * it — never for a refused (`private_address`) or `unreachable` destination.
+ * That is the ONLY guarantee shorty makes here.
+ *
+ * The url is UNVALIDATED for the adapter's own fetch. A browser re-resolves
+ * DNS (the name can now point at 127.0.0.1 or 169.254.169.254 — rebinding),
+ * follows script and meta redirects, and loads subresources from any host; a
+ * screenshot of an internal page hands its pixels back. The adapter MUST
+ * enforce its own egress policy: a resolver pinned to `ctx.addresses`, request
+ * interception that refuses non-public addresses, or a sandboxed network.
+ *
+ * `ctx.addresses` — the IPs the safe fetch checked and connected to for the
+ * final hop, for pinning the browser's resolver to them.
+ *
+ * A throw or a null → no screenshot; never fails the inspect.
  */
-export type ScreenshotAdapter = (url: string) => Promise<{ contentType: string; body: Buffer } | null>;
+export type ScreenshotAdapter = (
+  url: string,
+  ctx: { addresses: string[] },
+) => Promise<{ contentType: string; body: Buffer } | null>;
 
 /** Structurally a `@jeffjassky/telemetry` client's `track`. No-op by default. */
 export type TrackFn = (
