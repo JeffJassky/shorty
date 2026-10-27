@@ -1,7 +1,7 @@
 import React from 'react';
 import type { Breakdown } from '../../../types/index';
 import {
-  breakdownLabel, countFor, fmtDay, sumRows, type BotsMode, type BreakdownKind, type Interval,
+  breakdownLabel, countFor, fmtDay, type BotsMode, type BreakdownKind, type Interval,
 } from '../lib/analytics';
 import { fmtNumber } from '../lib/format';
 
@@ -63,7 +63,11 @@ export function TimeSeries({
   const line = points.map((p) => countFor(mode, p.humans, p.bots));
   const top = points.map((p, i) => (mode === 'separate' ? line[i] + p.bots : line[i]));
   const max = Math.max(...top, 1);
-  const total = line.reduce((a, b) => a + b, 0) + (mode === 'separate' ? points.reduce((a, p) => a + p.bots, 0) : 0);
+  // Same semantics as the KPI tiles: Hide / Show separately count people only
+  // (bots are stated apart), Include sums them.
+  const lineTotal = line.reduce((a, b) => a + b, 0);
+  const botTotal = points.reduce((a, p) => a + p.bots, 0);
+  const total = lineTotal + (mode === 'separate' ? botTotal : 0);
   const x = (i: number) => pad.l + (n === 1 ? 0.5 : i / (n - 1)) * (W - pad.l - pad.r);
   const y = (v: number) => pad.t + (1 - v / max) * (H - pad.t - pad.b);
   const base = H - pad.b;
@@ -80,7 +84,7 @@ export function TimeSeries({
     return idx >= 0 ? [{ idx, label: m.label }] : [];
   });
 
-  const summary = `${fmtNumber(total)} clicks, ${fmtDay(points[0].date, interval)} to ${fmtDay(points[n - 1].date, interval)}`;
+  const summary = `${fmtNumber(lineTotal)} ${lineTotal === 1 ? 'click' : 'clicks'}${mode === 'separate' ? `, ${fmtNumber(botTotal)} ${botTotal === 1 ? 'bot' : 'bots'}` : ''}, ${fmtDay(points[0].date, interval)} to ${fmtDay(points[n - 1].date, interval)}`;
 
   return (
     <div ref={wrap} className="chart-wrap">
@@ -151,7 +155,6 @@ export function BreakdownCard({
     .filter((r) => r.value > 0 || (mode === 'separate' && r.bots > 0))
     .sort((a, b) => b.value - a.value);
   const max = Math.max(1, ...shown.map((r) => r.value));
-  const total = sumRows(rows, mode);
   return (
     <section className="card breakdown" aria-label={title}>
       <div className="card-head"><h3 className="card-title">{title}</h3></div>
@@ -165,10 +168,7 @@ export function BreakdownCard({
                   <div className="bd-bar" style={{ width: `${Math.max(2, (r.value / max) * 100)}%` }} aria-hidden="true" />
                   <span className="bd-label" title={r.key}>{breakdownLabel(kind, r.key)}</span>
                   {mode === 'separate' && r.bots > 0 && <span className="bd-bots muted text-xs">+{fmtNumber(r.bots)} bots</span>}
-                  <span className="bd-count tabular">
-                    {fmtNumber(r.value)}
-                    {total > 0 && <span className="bd-pct muted"> {Math.round((r.value / total) * 100)}%</span>}
-                  </span>
+                  <span className="bd-count tabular">{fmtNumber(r.value)}</span>
                 </li>
               ))}
             </ul>

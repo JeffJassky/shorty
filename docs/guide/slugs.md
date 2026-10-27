@@ -39,8 +39,9 @@ with a short maintenance window, or restart every instance after the rollout.
 | `always` | Rename any time. The old slug is freed and **breaks** anything that used it. The UI asks for confirmation. |
 | `never` | Fixed at creation. Every rename is `slug_locked`. |
 
-`alias` is the only mode that cannot break a printed or posted link, hence the
-default. A "rename" to the same key is not a rename, and a case-only change
+`alias` is the only mode that keeps renaming possible without ever breaking a
+printed or posted link, hence the default. (`never` forbids renames outright,
+and `untilClicked` locks the slug after the first click.) A "rename" to the same key is not a rename, and a case-only change
 (`spring` to `Spring`, under case-insensitive mode) just updates the display
 slug in every mode.
 

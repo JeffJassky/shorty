@@ -30,3 +30,6 @@ docs/.vitepress/cache/
 !src/**/tsconfig.json
 !docs/.vitepress/config.js
 !docs/.vitepress/config.ts
+
+# Playwright artifacts (traces, screenshots)
+playwright-results/

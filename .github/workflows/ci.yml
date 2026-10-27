@@ -80,5 +80,30 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: npx playwright install --with-deps chromium
-      # test:e2e rebuilds (cheap) and starts one example host per rename mode.
+      # Already built above; skip the rebuild inside the script.
       - run: npm run test:e2e
+        env:
+          E2E_SKIP_BUILD: '1'
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-results
+          path: playwright-results/
+          if-no-files-found: ignore
+
+  # The peer ranges' FLOOR. The matrix above tests the newest of each mongoose
+  # major; a range is a claim, and the oldest allowed versions are where it
+  # breaks. See standards/traps.md #10.
+  peers-floor:
+    runs-on: ubuntu-latest
+    name: peers floor (express 4.18, mongoose 7)
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm i --no-save express@4.18 mongoose@7
+      - run: npm run build
+      - run: npm test

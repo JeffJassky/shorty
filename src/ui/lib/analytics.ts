@@ -120,6 +120,17 @@ export function breakdownLabel(kind: BreakdownKind, key: string): string {
 export const sumRows = (rows: Breakdown[], mode: BotsMode): number =>
   rows.reduce((n, r) => n + countFor(mode, r.humans, r.bots), 0);
 
+/**
+ * The instants a resolved range covers, for placing history markers. Presets
+ * are already instants; a custom range is calendar days in the SERVER's
+ * `clicks.timezone`, which the browser doesn't know, so its bounds use the
+ * browser's local day edges (the ±1 day caveat on markers).
+ */
+export function rangeBounds(r: ResolvedRange): { fromMs: number; toMs: number } {
+  if (r.from.includes('T')) return { fromMs: Date.parse(r.from), toMs: Date.parse(r.to) };
+  return { fromMs: parseDay(r.from).getTime(), toMs: parseDay(r.to).getTime() + 86_400_000 - 1 };
+}
+
 /** `YYYY-MM-DD` → local Date (no timezone shift). */
 export function parseDay(day: string): Date {
   const [y, m, d] = day.split('-').map(Number);

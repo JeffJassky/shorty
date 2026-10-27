@@ -18,7 +18,7 @@ first request. The authoritative declarations, with full doc comments, are in
 | `listLimit` | `200` | Max rows per list page. |
 | `now` | `() => new Date()` | Clock, for tests and replays. |
 | `logger` | none | `{ debug, info, warn, error }`, each optional. |
-| `resolveUser` | none | `(req) => { id, name? } \| null`; stamps `createdBy` / `updatedBy`. `defaultResolveUser` is exported. |
+| `resolveUser` | `defaultResolveUser` | `(req) => { id, name? } \| null`; stamps `createdBy` / `updatedBy`. The default reads the id from `req.authUserId`, `req.user._id` or `req.user.id`, and the name from `req.user.name`, `displayName` or `email`. |
 | `screenshot` | none | [Screenshot adapter](./inspect). The UI hides the Screenshot tab without it. |
 | `ui` | `{}` | Defaults merged into every `ui()` call. |
 | hooks | none | `onClick`, `onCreate`, `onUpdate`, `onArchive`, `onDelete`, `onMiss`, `track`. See [Hooks & telemetry](./hooks). |
@@ -52,8 +52,11 @@ mode or an absolute http(s) URL throws a `TypeError` naming the key.
 
 | Key | Default | Notes |
 |---|---|---|
-| `allowedHosts` | unset (any public http(s) host) | Strings match the hostname exactly; RegExps test it. |
+| `allowedHosts` | unset (any http(s) host) | Strings match the hostname exactly; RegExps test it. |
 | `blockedHosts` | `[]` | Same matching. Refused with `host_blocked`. |
+
+Destinations are **not** checked for public addresses when you save them; only
+`inspect`'s fetch is (see [Link previews & SSRF](./inspect)).
 
 A destination that points at `publicBaseUrl` itself (or anything under it) is
 refused with `destination_loop`.

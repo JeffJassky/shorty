@@ -26,10 +26,14 @@ test('7. 3 human + 1 bot click: detail shows 3, Include shows 4, Show separately
   const botHit = await request.get(link.shortUrl, { maxRedirects: 0, headers: { 'user-agent': BOT_UA } });
   expect(botHit.status()).toBe(302);
 
-  // Tracking runs after the response; wait for the counters, not for time.
+  // Tracking runs after the response; wait on the stats the page will read,
+  // not on time, and not just on the link counters.
   await expect.poll(async () => {
-    const l = (await (await request.get(`api/links/${link.id}`)).json()).link;
-    return [l.clicks, l.botClicks];
+    const from = new Date(Date.now() - 2 * 86_400_000).toISOString();
+    const to = new Date().toISOString();
+    const res = await page.request.get(`api/links/${link.id}/stats?from=${from}&to=${to}&interval=day`);
+    const t = (await res.json()).totals;
+    return [t.humans.clicks, t.bots.clicks];
   }).toEqual([3, 1]);
 
   await page.goto(`./#/links/${link.id}`);
@@ -79,22 +83,37 @@ test('7c. Edit from the detail page returns to the detail page on close and on s
   await expect(page.getByRole('heading', { level: 1 })).toHaveText('Renamed from detail');
 });
 
-test('8. analytics overview lists the link under Top links', async ({ page }) => {
+test('8. analytics overview lists the link under Top links with its count, and the campaign', async ({ page }) => {
   await page.goto('./#/analytics');
   const top = page.getByRole('region', { name: 'Top links' });
   await expect(top.getByRole('link', { name: '/stats-demo' })).toBeVisible();
-  await expect(page.getByRole('region', { name: 'Top campaigns' })).toContainText('stats_demo');
+  await expect(top.locator('tr', { hasText: '/stats-demo' }).locator('td.num')).toHaveText('3');
+  await expect(page.getByRole('region', { name: 'Top campaigns' }).locator('tr', { hasText: 'stats_demo' }).locator('td.num')).toHaveText('3');
+  // Hide mode: no bot tile; Show separately adds it and the bot suffix.
+  await expect(page.locator('.kpi-label', { hasText: 'Bot clicks' })).toHaveCount(0);
+  await page.getByRole('radio', { name: 'Show separately' }).click();
+  await expect(page.locator('.kpi-label', { hasText: 'Bot clicks' })).toBeVisible();
   await top.getByRole('link', { name: '/stats-demo' }).click();
   await expect(page).toHaveURL(new RegExp(`#/links/${link.id}$`));
 });
 
-test('range picker: 12 months and custom send valid ranges', async ({ page }) => {
+test('range picker: 12 months renders without error; custom sends YYYY-MM-DD; over 400 days is refused', async ({ page }) => {
   await page.goto('./#/analytics');
-  const calls: string[] = [];
-  page.on('request', (r) => { if (r.url().includes('/stats')) calls.push(r.url()); });
+  const urls: string[] = [];
+  page.on('request', (r) => { if (r.url().includes('/stats')) urls.push(r.url()); });
+
+  const twelve = page.waitForResponse((r) => r.url().includes('/stats') && r.url().includes('interval=week'));
   await page.getByRole('radio', { name: '12 months' }).click();
-  await expect.poll(() => calls.some((u) => u.includes('interval=week'))).toBe(true);
+  expect((await twelve).status()).toBe(200);
+  await expect(page.getByTestId('timeseries')).toBeVisible();
+  await expect(page.getByRole('alert')).toHaveCount(0);
+
   await page.getByRole('radio', { name: 'Custom' }).click();
+  await page.getByLabel('From date').fill('2026-01-01');
+  await page.getByLabel('To date').fill('2026-01-31');
+  await expect.poll(() => urls.some((u) => /from=2026-01-01&to=2026-01-31/.test(u) || (u.includes('from=2026-01-01') && u.includes('to=2026-01-31')))).toBe(true);
+  await expect(page.getByTestId('timeseries')).toBeVisible();
+
   await page.getByLabel('From date').fill('2020-01-01');
   await page.getByLabel('To date').fill('2024-01-01');
   await expect(page.getByRole('alert')).toContainText('400 days');

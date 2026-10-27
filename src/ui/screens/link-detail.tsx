@@ -5,7 +5,7 @@ import { BreakdownCard, StatTile, TimeSeries, type ChartMarker } from '../compon
 import { CopyButton } from '../components/copy-button';
 import { RangeBar } from '../components/range-bar';
 import { Tip } from '../components/tip';
-import { DEFAULT_RANGE, countFor, useBotsMode, type RangeState } from '../lib/analytics';
+import { DEFAULT_RANGE, countFor, rangeBounds, useBotsMode, type RangeState } from '../lib/analytics';
 import { useApp } from '../lib/context';
 import { errorMessage } from '../lib/errors';
 import { dateOnly, fmtDateTime, fmtNumber, hostAndPath } from '../lib/format';
@@ -35,10 +35,19 @@ export function LinkDetailScreen({ id }: { id: string }) {
   const dest = link ? hostAndPath(link.destination) : null;
   const title = link ? link.title || `${dest!.host}${dest!.path}` : '';
 
-  const markers: ChartMarker[] = history.status === 'ready'
-    ? history.data.flatMap((h) => (h.kind === 'destination'
-      ? [{ date: dateOnly(new Date(h.at)), label: `Destination changed · ${new Date(h.at).toLocaleDateString(undefined, { dateStyle: 'medium' })}` }]
-      : []))
+  // Markers: only destination changes inside the range's instants, placed on the
+  // bucket that contains the entry's calendar day IN THE BROWSER's timezone.
+  // The server buckets by `clicks.timezone`, which the UI isn't told, so a
+  // change near midnight can land one day off. The chart never draws a marker
+  // for a day before its first bucket.
+  const bounds = resolved ? rangeBounds(resolved) : null;
+  const markers: ChartMarker[] = history.status === 'ready' && bounds
+    ? history.data.flatMap((h) => {
+      if (h.kind !== 'destination') return [];
+      const t = Date.parse(h.at);
+      if (!(t >= bounds.fromMs && t <= bounds.toMs)) return [];
+      return [{ date: dateOnly(new Date(t)), label: `Destination changed · ${new Date(t).toLocaleDateString(undefined, { dateStyle: 'medium' })}` }];
+    })
     : [];
 
   const stats = state.status === 'ready' ? state.data : null;

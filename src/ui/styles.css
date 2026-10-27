@@ -987,7 +987,6 @@ ins { background: var(--green-soft); color: var(--green-fg); text-decoration: no
 .bd-label { position: relative; z-index: 1; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bd-bots, .bd-count { position: relative; z-index: 1; white-space: nowrap; }
 .bd-count { font-weight: 500; }
-.bd-pct { font-weight: 400; font-size: 12px; margin-left: 4px; }
 .bd-note { margin: 10px 0 0; }
 .rank-table td, .rank-table th { padding: 8px 16px; }
 .rank-link { font-family: var(--font-mono); font-size: 12.5px; color: var(--fg); }

@@ -54,15 +54,18 @@ export function AnalyticsScreen() {
             <StatTile
               label={<Tip label="First click from a visitor within an hour" focusable><span className="tip-label">Unique visitors</span></Tip>}
               value={humans ? fmtNumber(countFor(bots, humans.uniques, botTotals!.uniques)) : <span className="skeleton kpi-sk" />}
+              meta={bots === 'separate' && botTotals && botTotals.uniques > 0 ? `+${fmtNumber(botTotals.uniques)} bots` : undefined}
             />
             <StatTile
               label={<Tip label="Clicks that came from a link's QR code." focusable><span className="tip-label">QR scans</span></Tip>}
               value={humans ? fmtNumber(humans.qr) : <span className="skeleton kpi-sk" />}
             />
-            <StatTile
-              label={<Tip label="Bots are automated visitors like search crawlers and link previewers." focusable><span className="tip-label">Bot clicks</span></Tip>}
-              value={botTotals ? fmtNumber(botTotals.clicks) : <span className="skeleton kpi-sk" />}
-            />
+            {bots !== 'hide' && (
+              <StatTile
+                label={<Tip label="Bots are automated visitors like search crawlers and link previewers." focusable><span className="tip-label">Bot clicks</span></Tip>}
+                value={botTotals ? fmtNumber(botTotals.clicks) : <span className="skeleton kpi-sk" />}
+              />
+            )}
           </div>
 
           <section className="card chart-card" aria-label="Clicks over time">

@@ -7,7 +7,7 @@
 | mongoose | 7, 8 or 9 (peer dependency; CI runs the full suite on all three) |
 | Express | 4.18+ or 5 (peer dependency) |
 
-Runtime dependencies: `isbot` (MIT) and `ua-parser-js` pinned to 1.x (2.x is
+Runtime dependencies: `isbot` (Unlicense) and `ua-parser-js` pinned to 1.x (2.x is
 AGPL). The admin UI is a prebuilt bundle; React and the QR library are not
 runtime dependencies of your app.
 

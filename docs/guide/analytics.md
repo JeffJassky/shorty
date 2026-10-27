@@ -18,6 +18,13 @@ For every hit shorty writes one raw click row (kept `retentionDays`, default
 | `browser`, `os`, `device` | From the user agent. |
 | `queryKeys` | Keys of the incoming query: at most 20 distinct keys (first seen), each truncated to 64 characters, `qr` excluded. **Values are never stored.** |
 
+Two small side collections also exist:
+
+- `shorty_seen`: one row per (link, visitor hash) for the unique window, with a
+  TTL equal to `uniqueWindowMinutes`.
+- `shorty_misses`: the path and referrer host of unknown-slug requests, kept
+  30 days.
+
 **No IP address is stored**, raw or truncated.
 
 ## The visitor hash
@@ -62,7 +69,7 @@ const stats = await shorty.stats({
 stats.totals.humans;   // { clicks, uniques, qr }
 stats.totals.bots;     // { clicks, uniques }
 stats.series;          // [{ date, humans, bots }]
-stats.breakdowns;      // referrer, country, device, browser, os, source, revision
+stats.breakdowns;      // referrer, country, device, browser, os, source, revision (per-link only)
 ```
 
 - Date-only `from` / `to` are calendar days in `clicks.timezone`, both

@@ -30,7 +30,7 @@ for input that is not a URL (`invalid_url`, `unsupported_scheme`).
 An admin-only endpoint that fetches arbitrary URLs is a server-side request
 forgery vector, so the fetch:
 
-- allows only http and https, and re-validates every redirect hop (max 5);
+- allows only http and https, and re-validates every redirect hop (max 5 by default, `inspect.maxRedirects`);
 - resolves DNS once per hop and **connects to the checked address**, so DNS
   rebinding cannot swap it afterwards; fails closed on DNS errors;
 - refuses any hop whose addresses are not public unicast (loopback, private
