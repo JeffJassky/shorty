@@ -14,3 +14,7 @@ real if CI runs the matrix. See standards/traps.md #10.
 - Public redirect router (`shorty.redirect`): slug lookup, expiry, social cards for crawlers, query forwarding, `onMiss` handling.
 - Click pipeline after the response: bot/human split, unique window, daily rollups, `onClick` / `track`, `drain()` and `health()`.
 - Runtime dependencies `isbot` and `ua-parser-js@1` (pinned below 2: v2 is AGPL).
+- Admin JSON API (`shorty.routes`), stats (humans and bots always separate), live param-suggestion catalog.
+
+### Requirements
+- MongoDB 5.2+ (`$firstN` in the param catalog).

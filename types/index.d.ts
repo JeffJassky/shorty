@@ -9,6 +9,8 @@ import type { Connection, Model, Mongoose, Types } from 'mongoose';
  * declaration here fails the typecheck.
  *
  * Plan: plans/build-plan.md. Section references (§n) point there.
+ *
+ * Requires MongoDB 5.2+ (the param catalog uses `$firstN`).
  */
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -441,7 +443,7 @@ export interface Stats {
   breakdownsTruncated: boolean;
   /** Overview only (no `linkId`). */
   topLinks?: Array<{ linkId: string; slug: string; humans: number; bots: number }>;
-  /** Overview only. Keyed by `utm.campaign`. */
+  /** Overview only. Keyed by `utm.campaign`; ranks within the 5,000 busiest links in the range. */
   topCampaigns?: Array<{ campaign: string; humans: number; bots: number }>;
 }
 
