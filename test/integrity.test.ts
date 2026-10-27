@@ -422,3 +422,33 @@ describe('ready() re-key', () => {
     await expectClaimsMatchKeys(h, link.id);
   });
 });
+
+describe('PR 7 review follow-ups', () => {
+  it('does not leave a stale old-mode claim behind when ready() crashes after re-keying a link', async () => {
+    const { h, link } = await setup({}, 'AbC'); // insensitive: key `abc`
+    const s2 = sibling(h, true);
+    // Crash in the stale-claim cleanup, after the link itself was re-keyed.
+    const restore = swap(h.shorty.models.Slug, 'deleteMany', () => () => {
+      restore();
+      throw new Error('simulated crash');
+    });
+    await expect(s2.ready()).rejects.toThrow('simulated crash');
+
+    await sibling(h, true).ready(); // reboot converges
+
+    await expectClaimsMatchKeys(h, link.id);
+    expect((await sibling(h, true).checkSlug('abc')).available).toBe(true);
+  });
+
+  it('does not orphan daily or seen rows when the click insert fails after a concurrent delete', async () => {
+    const { h, link } = await setup();
+    swap(h.shorty.models.Click, 'create', () => async () => {
+      await h.shorty.deleteLink(link.id);
+      throw new Error('insert failed');
+    });
+    await hit(h, '/go/aaa');
+    await h.shorty.drain();
+    expect(await rowsLeft(h, link.id)).toEqual(NONE);
+    expect(await h.shorty.models.Seen.countDocuments({ linkId: oid(link.id) })).toBe(0);
+  });
+});
