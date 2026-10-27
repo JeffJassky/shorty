@@ -18,6 +18,7 @@ real if CI runs the matrix. See standards/traps.md #10.
 - Admin JSON API (`shorty.routes`), stats (humans and bots always separate), live param-suggestion catalog.
 - Integrity under concurrency: every link carries a write version (`wv`) that `updateLink` pins, so renames and edits planned from a stale read are re-planned; renames never release a claim the link may hold (lost acks included); a case-only slug change just updates the display form; redirect patches write only the fields they name; deletes racing updates or clicks leave no orphan history, click or daily rows.
 - Case-mode stamp (`ck`) per link: `ready()` re-keys every link written under the other mode on every boot, checks collisions across all links first, and sweeps stale claims, so rolling deploys across a `caseSensitive` flip converge on the last instance to boot.
+- Inspect hardening: the default address policy now allows only IPv6 2000::/3 minus special-purpose blocks (and refuses 192.88.99.0/24); `ScreenshotAdapter` receives `ctx.addresses` (the checked IPs) and remains responsible for its own egress policy; head-stop parsing is linear.
 
 ### Requirements
 - MongoDB 5.2+ (`$firstN` in the param catalog).

@@ -52,6 +52,7 @@ function isPublicV4([a, b, c]: number[]): boolean {
   if (a === 172 && b >= 16 && b <= 31) return false;           // RFC 1918
   if (a === 192 && b === 0 && c === 0) return false;           // IETF protocol assignments
   if (a === 192 && b === 0 && c === 2) return false;           // TEST-NET-1
+  if (a === 192 && b === 88 && c === 99) return false;         // 6to4 relay anycast (deprecated)
   if (a === 192 && b === 168) return false;                    // RFC 1918
   if (a === 198 && (b === 18 || b === 19)) return false;       // benchmarking
   if (a === 198 && b === 51 && c === 100) return false;        // TEST-NET-2
@@ -63,21 +64,21 @@ function isPublicV4([a, b, c]: number[]): boolean {
 function isPublicV6(g: number[]): boolean {
   const v4 = (hi: number, lo: number): number[] => [hi >> 8, hi & 255, lo >> 8, lo & 255];
   const zeros = (n: number): boolean => g.slice(0, n).every((x) => x === 0);
-  if (zeros(8) || (zeros(7) && g[7] === 1)) return false;                       // :: and ::1
   if (zeros(5) && g[5] === 0xffff) return isPublicV4(v4(g[6], g[7]));            // ::ffff:a.b.c.d
-  if (zeros(6)) return isPublicV4(v4(g[6], g[7]));                               // ::a.b.c.d (deprecated)
   if (g[0] === 0x64 && g[1] === 0xff9b && g[2] === 1) return false;               // local-use NAT64 64:ff9b:1::/48
   if (g[0] === 0x64 && g[1] === 0xff9b && g.slice(2, 6).every((x) => x === 0)) { // NAT64 64:ff9b::/96
     return isPublicV4(v4(g[6], g[7]));
   }
+  if ((g[0] & 0xe000) !== 0x2000) return false;                                  // only 2000::/3 from here on
   if (g[0] === 0x2002) return isPublicV4(v4(g[1], g[2]));                        // 6to4
-  if (g[0] === 0x2001 && g[1] === 0) return false;                               // Teredo
-  if (g[0] === 0x2001 && g[1] === 0xdb8) return false;                           // documentation
-  if (g[0] === 0x100 && g[1] === 0 && g[2] === 0 && g[3] === 0) return false;    // discard 100::/64
-  if ((g[0] & 0xfe00) === 0xfc00) return false;                                  // unique-local fc00::/7
-  if ((g[0] & 0xffc0) === 0xfe80) return false;                                  // link-local fe80::/10
-  if ((g[0] & 0xffc0) === 0xfec0) return false;                                  // site-local fec0::/10
-  if ((g[0] & 0xff00) === 0xff00) return false;                                  // multicast ff00::/8
+  if (g[0] === 0x2001) {
+    if (g[1] === 0) return false;                                                // Teredo 2001::/32
+    if (g[1] === 2 && g[2] === 0) return false;                                  // benchmarking 2001:2::/48
+    if ((g[1] & 0xfff0) === 0x10) return false;                                  // ORCHID 2001:10::/28
+    if ((g[1] & 0xfff0) === 0x20) return false;                                  // ORCHIDv2 2001:20::/28
+    if (g[1] === 0xdb8) return false;                                            // documentation
+  }
+  if (g[0] === 0x3fff && (g[1] & 0xf000) === 0) return false;                    // documentation 3fff::/20
   return true;
 }
 
@@ -133,6 +134,8 @@ function requestHop(url: URL, addresses: string[], cfg: InspectCtx, signal: Abor
     let headers: http.IncomingHttpHeaders = {};
     const chunks: Buffer[] = [];
     let size = 0;
+    let parsedAt = 0;
+    let pending = false;   // a marker was seen but its parse was skipped by the doubling rule
     let done = false;
 
     const finish = (err?: Error): void => {
@@ -190,8 +193,14 @@ function requestHop(url: URL, addresses: string[], cfg: InspectCtx, signal: Abor
         if (size >= cfg.maxBytes) { finish(); return; }
         // Cheap pre-filter, then ask the tokenizer: a `</head` inside a
         // <script> or comment is not the end of the head.
-        if ((window.includes('</head') || window.includes('<body')) &&
-            parseHead(Buffer.concat(chunks).toString('latin1'), url.href).ended) finish();
+        // Re-parse only once the buffer has doubled since the last parse (linear in total);
+        // a marker seen while waiting is remembered so a decoy cannot hide the real end.
+        if (window.includes('</head') || window.includes('<body')) pending = true;
+        if (pending && size >= parsedAt * 2) {
+          parsedAt = size;
+          pending = false;
+          if (parseHead(Buffer.concat(chunks).toString('latin1'), url.href).ended) finish();
+        }
       });
       response.on('end', () => finish());
     });
@@ -202,15 +211,26 @@ function requestHop(url: URL, addresses: string[], cfg: InspectCtx, signal: Abor
 
 // ── the chain ───────────────────────────────────────────────────────────────
 
-export interface FetchOutcome {
-  chain: Array<{ url: string; status: number }>;
-  /** Set when a hop answered and the chain ended there. */
-  final?: { url: string; status: number; ms: number };
-  headers?: http.IncomingHttpHeaders;
-  /** Raw head bytes, `text/html` only. */
-  body?: Buffer;
-  failure?: 'private_address' | 'unreachable';
-}
+export type FetchOutcome =
+  | {
+      chain: Array<{ url: string; status: number }>;
+      /** A hop answered and the chain ended there. */
+      final: { url: string; status: number; ms: number };
+      headers: http.IncomingHttpHeaders;
+      /** The checked addresses the final hop connected to. */
+      addresses: string[];
+      /** Raw head bytes, `text/html` only. */
+      body?: Buffer;
+      failure?: undefined;
+    }
+  | {
+      chain: Array<{ url: string; status: number }>;
+      final?: undefined;
+      headers?: undefined;
+      addresses?: undefined;
+      body?: undefined;
+      failure: 'private_address' | 'unreachable';
+    };
 
 const REDIRECT = (s: number): boolean => s >= 300 && s < 400;
 const bare = (u: URL): string => { const c = new URL(u.href); c.hash = ''; return c.href; };
@@ -236,7 +256,7 @@ async function checkedAddresses(url: URL, cfg: InspectCtx, signal: AbortSignal):
 }
 
 export async function safeFetch(start: URL, cfg: InspectCtx, signal: AbortSignal, t0: number): Promise<FetchOutcome> {
-  const out: FetchOutcome = { chain: [] };
+  const out: { chain: Array<{ url: string; status: number }> } = { chain: [] };
   const seen = new Set<string>();
   let url = start;
   let redirects = 0;
@@ -277,6 +297,7 @@ export async function safeFetch(start: URL, cfg: InspectCtx, signal: AbortSignal
       ...out,
       final: { url: key, status: hop.status, ms: Date.now() - t0 },
       headers: hop.headers,
+      addresses,
       ...(hop.body ? { body: hop.body } : {}),
     };
   }
