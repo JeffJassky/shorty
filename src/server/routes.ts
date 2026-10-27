@@ -4,6 +4,7 @@ import type { CallContext, LinkInput, LinkPatch, LinksQuery, ShortyInstance, Sta
 import { ShortyError } from '../shared/errors.js';
 import type { ResolvedContext } from './config.js';
 import { wrap } from './errors.js';
+import { OBJECT_ID } from './ids.js';
 
 /**
  * The admin JSON API (`types/client.d.ts` is the route table). No body parser
@@ -12,8 +13,6 @@ import { wrap } from './errors.js';
  * literal paths are declared before `/:id` (traps #4), and anything not in the
  * table falls through with `next()`.
  */
-
-const OBJECT_ID = /^[0-9a-f]{24}$/i;
 
 const bad = (field: string, why: string): ShortyError => new ShortyError('validation', undefined, { field, why });
 

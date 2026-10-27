@@ -52,37 +52,45 @@ const PAIRS = [
     },
   },
   { $unwind: '$pairs' },
+  // A param without a key is not a suggestion.
+  { $match: { 'pairs.k': { $type: 'string', $ne: '' } } },
 ];
 
 export function createParamValues(ctx: ResolvedContext): () => Promise<ParamKeyStat[]> {
   const { Link } = ctx.models;
 
   return async function paramValues(): Promise<ParamKeyStat[]> {
-    const [keyRows, valueRows] = await Promise.all([
-      Link.aggregate<{ _id: string; count: number }>([
-        ...PAIRS,
-        { $group: { _id: { k: '$pairs.k', l: '$_id' } } },
-        { $group: { _id: '$_id.k', count: { $sum: 1 } } },
-        { $sort: { count: -1, _id: 1 } },
-        { $limit: MAX_KEYS },
-      ]).option({ maxTimeMS: MAX_TIME_MS, allowDiskUse: true }),
-      Link.aggregate<{ _id: string; values: Array<{ value: string; count: number; lastUsedAt: Date }> }>([
-        ...PAIRS,
-        // A link repeating a key=value counts once for that value.
-        { $group: { _id: { k: '$pairs.k', v: '$pairs.v', l: '$_id' }, updatedAt: { $first: '$updatedAt' } } },
-        { $group: { _id: { k: '$_id.k', v: '$_id.v' }, count: { $sum: 1 }, lastUsedAt: { $max: '$updatedAt' } } },
-        { $sort: { count: -1, '_id.v': 1 } },
-        {
-          $group: {
-            _id: '$_id.k',
-            values: { $push: { value: '$_id.v', count: '$count', lastUsedAt: '$lastUsedAt' } },
+    const keyRows = await Link.aggregate<{ _id: string; count: number }>([
+      ...PAIRS,
+      { $group: { _id: { k: '$pairs.k', l: '$_id' } } },
+      { $group: { _id: '$_id.k', count: { $sum: 1 } } },
+      { $sort: { count: -1, _id: 1 } },
+      { $limit: MAX_KEYS },
+    ]).option({ maxTimeMS: MAX_TIME_MS, allowDiskUse: true });
+    if (keyRows.length === 0) return [];
+
+    // Values only for the keys chosen above, so the two never disagree.
+    const valueRows = await Link.aggregate<{ _id: string; values: Array<{ value: string; count: number; lastUsedAt: Date }> }>([
+      ...PAIRS,
+      { $match: { 'pairs.k': { $in: keyRows.map((r) => r._id) } } },
+      // A link repeating a key=value counts once for that value.
+      { $group: { _id: { k: '$pairs.k', v: '$pairs.v', l: '$_id' }, updatedAt: { $first: '$updatedAt' } } },
+      { $group: { _id: { k: '$_id.k', v: '$_id.v' }, count: { $sum: 1 }, lastUsedAt: { $max: '$updatedAt' } } },
+      { $sort: { count: -1, '_id.v': 1 } },
+      // $firstN keeps at most 51 per key — one past the cap, so "more exist" is
+      // known — instead of collecting every distinct value into one document.
+      {
+        $group: {
+          _id: '$_id.k',
+          values: {
+            $firstN: {
+              n: VALUES_PER_KEY + 1,
+              input: { value: '$_id.v', count: '$count', lastUsedAt: '$lastUsedAt' },
+            },
           },
         },
-        // One past the cap, so "more exist" is known without returning them.
-        { $project: { values: { $slice: ['$values', VALUES_PER_KEY + 1] } } },
-        { $limit: MAX_KEYS },
-      ]).option({ maxTimeMS: MAX_TIME_MS, allowDiskUse: true }),
-    ]);
+      },
+    ]).option({ maxTimeMS: MAX_TIME_MS, allowDiskUse: true });
 
     const byKey = new Map(valueRows.map((r) => [r._id, r.values]));
     const items: ParamKeyStat[] = [];

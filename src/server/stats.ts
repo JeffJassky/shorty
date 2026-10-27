@@ -2,6 +2,7 @@ import mongoose from 'mongoose';
 import type { Breakdown, Stats, StatsPoint, StatsQuery } from '../../types/index.js';
 import { ShortyError } from '../shared/errors.js';
 import type { ResolvedContext } from './config.js';
+import { OBJECT_ID } from './ids.js';
 
 /**
  * `stats()` (§8). The series reads `shorty_daily` (kept forever); breakdowns
@@ -14,12 +15,13 @@ import type { ResolvedContext } from './config.js';
  */
 
 const { Types } = mongoose;
-const OBJECT_ID = /^[0-9a-f]{24}$/i;
 const DAY_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
 const MAX_DAYS = 400;
 const DEFAULT_TOP = 10;
 const MAX_TOP = 50;
 const MAX_TIME_MS = 2000;
+/** Links considered (busiest first) when rolling campaigns up in the overview. */
+const CAMPAIGN_LINKS = 5000;
 const DAY_MS = 86_400_000;
 
 type Interval = 'day' | 'week' | 'month';
@@ -129,6 +131,17 @@ export function createStats(ctx: ResolvedContext): (query: StatsQuery) => Promis
     const wall = dayToMs(day);
     let t = wall - offsetAt(wall);
     t = wall - offsetAt(t); // second pass settles a DST boundary
+    if (dayOf(new Date(t)) < day) {
+      // Local midnight doesn't exist (the clock jumped over it): the day begins
+      // at the first instant whose local day is `day`.
+      let lo = t;
+      let hi = t + DAY_MS;
+      while (hi - lo > 1) {
+        const mid = Math.floor((lo + hi) / 2);
+        if (dayOf(new Date(mid)) < day) lo = mid; else hi = mid;
+      }
+      t = hi;
+    }
     return new Date(t);
   }
 
@@ -173,7 +186,7 @@ export function createStats(ctx: ResolvedContext): (query: StatsQuery) => Promis
         throw new ShortyError('not_found', undefined, { id: String(query.linkId) });
       }
       linkId = new Types.ObjectId(query.linkId);
-      if (!(await Link.exists({ _id: linkId }))) throw new ShortyError('not_found', undefined, { id: query.linkId });
+      if (!(await Link.findOne({ _id: linkId }, { _id: 1 }).maxTimeMS(MAX_TIME_MS).lean())) throw new ShortyError('not_found', undefined, { id: query.linkId });
     }
 
     const fromAt = startOfDay(from);
@@ -236,7 +249,7 @@ export function createStats(ctx: ResolvedContext): (query: StatsQuery) => Promis
     const [bd] = await Click.aggregate<Record<string, Array<{ _id: string; humans: number; bots: number }>>>([
       { $match: clickMatch },
       { $facet: facets as Record<string, never[]> },
-    ]).option({ maxTimeMS: MAX_TIME_MS });
+    ]).option({ maxTimeMS: MAX_TIME_MS, allowDiskUse: true });
 
     const rows = (dim: string): Breakdown[] =>
       (bd?.[dim] ?? []).map((r) => ({ key: String(r._id), humans: r.humans, bots: r.bots }));
@@ -271,38 +284,43 @@ export function createStats(ctx: ResolvedContext): (query: StatsQuery) => Promis
     topCampaigns: NonNullable<Stats['topCampaigns']>;
   }> {
     const sort = { humans: -1, bots: -1, _id: 1 } as const;
-    const [out] = await Daily.aggregate<{
-      links: Array<{ _id: unknown; slug?: string; humans: number; bots: number }>;
-      campaigns: Array<{ _id: string; humans: number; bots: number }>;
-    }>([
+    const grouped = [
       { $match: dailyMatch },
       { $group: { _id: '$linkId', humans: { $sum: '$clicks' }, bots: { $sum: '$bots' } } },
-      { $lookup: { from: Link.collection.name, localField: '_id', foreignField: '_id', as: 'link' } },
+    ];
+    const lookup = (project: Record<string, unknown>) => [
+      { $lookup: { from: Link.collection.name, localField: '_id', foreignField: '_id', as: 'link', pipeline: [{ $project: project }] } },
       { $unwind: '$link' },
-      {
-        $project: {
-          humans: 1, bots: 1, slug: '$link.slug',
-          campaign: { $ifNull: ['$link.utm.campaign', ''] },
-        },
-      },
-      {
-        $facet: {
-          links: [{ $sort: sort }, { $limit: top }, { $project: { humans: 1, bots: 1, slug: 1 } }],
-          campaigns: [
-            { $match: { campaign: { $ne: '' } } },
-            { $group: { _id: '$campaign', humans: { $sum: '$humans' }, bots: { $sum: '$bots' } } },
-            { $sort: sort },
-            { $limit: top },
-          ],
-        },
-      },
-    ]).option({ maxTimeMS: MAX_TIME_MS });
+    ];
+    // Both lists bound the set BEFORE joining to links: the lookup only ever
+    // sees `top` (links) or CAMPAIGN_LINKS (campaigns) ids.
+    const [links, campaigns] = await Promise.all([
+      Daily.aggregate<{ _id: unknown; slug?: string; humans: number; bots: number }>([
+        ...grouped,
+        { $sort: sort },
+        { $limit: top },
+        ...lookup({ slug: 1 }),
+        { $project: { humans: 1, bots: 1, slug: '$link.slug' } },
+        { $sort: sort },
+      ]).option({ maxTimeMS: MAX_TIME_MS, allowDiskUse: true }),
+      Daily.aggregate<{ _id: string; humans: number; bots: number }>([
+        ...grouped,
+        { $sort: sort },
+        { $limit: CAMPAIGN_LINKS },
+        ...lookup({ 'utm.campaign': 1 }),
+        { $match: { 'link.utm.campaign': { $type: 'string', $ne: '' } } },
+        { $group: { _id: '$link.utm.campaign', humans: { $sum: '$humans' }, bots: { $sum: '$bots' } } },
+        { $sort: sort },
+        { $limit: top },
+      ]).option({ maxTimeMS: MAX_TIME_MS, allowDiskUse: true }),
+    ]);
+    const out = { links, campaigns };
 
     return {
-      topLinks: (out?.links ?? []).map((l) => ({
+      topLinks: out.links.map((l) => ({
         linkId: String(l._id), slug: l.slug ?? '', humans: l.humans, bots: l.bots,
       })),
-      topCampaigns: (out?.campaigns ?? []).map((c) => ({ campaign: c._id, humans: c.humans, bots: c.bots })),
+      topCampaigns: out.campaigns.map((c) => ({ campaign: c._id, humans: c.humans, bots: c.bots })),
     };
   }
 }
