@@ -584,6 +584,9 @@ export interface RedirectConfig {
    * Default true. Incoming params are appended before `#hash`; an incoming key
    * replaces EVERY occurrence of that key in the destination; repeated incoming
    * keys all forward; `qr` is stripped. No dangling `?` when nothing remains.
+   * The stored destination is sent exactly as stored (it is already encoded by
+   * `composeUrl`); shorty sets `Location` with its own encoder, never an
+   * in-band marker, so no substring of a URL is ever rewritten.
    * A key or value whose `%` escapes don't decode is forwarded verbatim.
    */
   forwardQuery?: boolean;

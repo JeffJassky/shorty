@@ -864,3 +864,28 @@ describe('End review (a) follow-ups', () => {
     });
   });
 });
+
+describe('PR 8 review follow-ups — no in-band markers in Location', () => {
+  const MARKERS = ['__shorty_pct__', '__pct__', 'PCT', '\u0000pct'];
+
+  it.each(MARKERS.filter((m) => !m.includes('\u0000')))('does not rewrite a forwarded value that happens to contain %s', async (m) => {
+    const { h } = await setup({}, { url: 'https://acme.com/s?u=1', slug: 'mk' });
+    const res = await get(h, `/go/mk?x=${encodeURIComponent(m)}&${encodeURIComponent(m)}=1`);
+    expect(res.status).toBe(302);
+    const loc = new URL(res.headers.location);
+    expect(loc.searchParams.get('x')).toBe(m);
+    expect(loc.searchParams.get(m)).toBe('1');
+  });
+
+  it('does not rewrite a destination path that contains a marker-like string, with or without forwarding', async () => {
+    const { h } = await setup({ config: { redirect: { forwardQuery: false } } }, { url: 'https://acme.com/__shorty_pct__/x', slug: 'mp' });
+    const res = await get(h, '/go/mp');
+    expect(res.headers.location).toBe('https://acme.com/__shorty_pct__/x');
+  });
+
+  it('still forwards a malformed escape verbatim beside a marker-like value', async () => {
+    const { h } = await setup({}, { url: 'https://acme.com/s', slug: 'mv' });
+    const res = await get(h, '/go/mv?a=%ZZ&b=__shorty_pct__');
+    expect(res.headers.location).toBe('https://acme.com/s?a=%ZZ&b=__shorty_pct__');
+  });
+});
