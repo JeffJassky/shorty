@@ -173,6 +173,8 @@ export function createLinkService(ctx: ResolvedContext, slugs: SlugService, hook
       ...(social ? { social } : {}),
       ...(og ? { og: { ...og, fetchedAt: now } } : {}),
       rev: 1,
+      wv: 1,
+      ck: ctx.slug.caseSensitive,
       clicks: 0,
       uniqueClicks: 0,
       botClicks: 0,
@@ -193,11 +195,18 @@ export function createLinkService(ctx: ResolvedContext, slugs: SlugService, hook
           rev: 1, destination, slug: slug.display,
         });
       } catch (err) {
-        await Promise.allSettled([
-          LinkModel.deleteOne({ _id }),
-          History.deleteMany({ linkId: _id }),
-          slugs.release(slug.key, _id),
-        ]);
+        // The claim is the only thing keeping a second owner out, so it goes
+        // last and only once the Link row is known to be gone: if the delete
+        // fails the row may still hold the key, and the claim must stay.
+        let removed = false;
+        try {
+          await LinkModel.deleteOne({ _id });
+          removed = true;
+        } catch {
+          // keep the claim
+        }
+        await History.deleteMany({ linkId: _id }).catch(() => undefined);
+        if (removed) await slugs.release(slug.key, _id).catch(() => undefined);
         throw err;
       }
     };
@@ -287,7 +296,11 @@ export function createLinkService(ctx: ResolvedContext, slugs: SlugService, hook
     // Slug. A patch whose key equals the current one is not a rename.
     if (has('slug')) {
       const to = slugs.parse(patch.slug);
-      if (to.key !== doc.slugKey) {
+      if (to.key === doc.slugKey) {
+        // Case-only change under caseSensitive: false: the display form moves,
+        // the key and its claim stay. Not a rename, so it never locks.
+        if (to.display !== doc.slug) p.set.slug = to.display;
+      } else {
         const mode = ctx.slug.rename;
         if (mode === 'never' || (mode === 'untilClicked' && doc.clicks > 0)) {
           throw new ShortyError('slug_locked', undefined, { slug: doc.slug, mode });
@@ -299,6 +312,7 @@ export function createLinkService(ctx: ResolvedContext, slugs: SlugService, hook
         p.set.slugKey = to.key;
         p.set.aliases = aliases;
         p.set.keys = [to.key, ...aliases.map((a) => slugs.keyOf(a.slug))];
+        p.set.ck = ctx.slug.caseSensitive;
         p.entries.push({ kind: 'slug', at: now, ...by, from: doc.slug, to: to.display, mode });
       }
     }
@@ -307,7 +321,17 @@ export function createLinkService(ctx: ResolvedContext, slugs: SlugService, hook
     if (has('title')) assign('title', optionalText(patch.title, 'title'));
     if (has('notes')) assign('notes', optionalText(patch.notes, 'notes'));
     if (has('tags')) p.set.tags = cleanTags(patch.tags);
-    if (has('redirect')) p.set.redirect = mergeRedirect(doc.redirect ?? {}, patch.redirect, true);
+    if (has('redirect')) {
+      // Validate against the current value, but write only the fields the patch
+      // names, as dotted paths: a concurrent patch to the other field survives.
+      const merged = mergeRedirect(doc.redirect ?? {}, patch.redirect, true);
+      const named = patch.redirect as Record<string, unknown>;
+      for (const field of ['status', 'forwardQuery'] as const) {
+        if (named[field] === undefined) continue;
+        if (named[field] === null) p.unset[`redirect.${field}`] = 1;
+        else p.set[`redirect.${field}`] = merged[field];
+      }
+    }
     if (has('expiresAt')) assign('expiresAt', optionalDate(patch.expiresAt, 'expiresAt'));
     if (has('maxClicks')) assign('maxClicks', optionalMaxClicks(patch.maxClicks));
     if (has('expiredUrl')) assign('expiredUrl', optionalHttpUrl(patch.expiredUrl, 'expiredUrl'));
@@ -333,39 +357,57 @@ export function createLinkService(ctx: ResolvedContext, slugs: SlugService, hook
       if (p.noop) return toLink(ctx, doc);
 
       const linkId = doc._id;
-      const update: Record<string, unknown> = { $set: p.set };
+      const update: Record<string, unknown> = { $set: p.set, $inc: { wv: 1, ...(p.bumpRev ? { rev: 1 } : {}) } };
       if (Object.keys(p.unset).length) update.$unset = p.unset;
-      if (p.bumpRev) update.$inc = { rev: 1 };
 
-      // Claim the new slug (if it is not already ours), then swap it in. The
-      // filter pins the slug and destination this plan was computed against, so
+      // The filter pins the write version this plan was computed against, so
       // two writers can't both succeed with answers derived from the same read.
+      // An untilClicked rename also pins `clicks: 0`: a human click never bumps
+      // `wv`, but it must still lock the slug.
+      const filter: Record<string, unknown> = { _id: linkId, wv: doc.wv };
+      if (p.rename && ctx.slug.rename === 'untilClicked') filter.clicks = 0;
+
+      // Claim the new slug (if it is not already ours), then swap it in.
+      const claimKey = p.rename && !p.rename.ownAlias ? p.rename.to : null;
       let claimed = false;
+      let matched = false;
       try {
-        if (p.rename && !p.rename.ownAlias) {
-          await slugs.claim(p.rename.to, linkId, true, now);
+        if (claimKey) {
+          await slugs.claim(claimKey, linkId, true, now);
           claimed = true;
         }
-        const res = await LinkModel.updateOne(
-          { _id: linkId, slugKey: doc.slugKey, destination: doc.destination },
-          update,
-        );
-        if (res.matchedCount === 0) {
-          if (claimed) await slugs.release(p.rename!.to.key, linkId);
-          continue;
-        }
+        matched = (await LinkModel.updateOne(filter, update)).matchedCount > 0;
       } catch (err) {
-        if (claimed) await slugs.release(p.rename!.to.key, linkId).catch(() => undefined);
-        throw err;
+        if (!claimed) throw err;
+        // A timeout or lost ack may mean the write landed. Release the claim
+        // only once the link is confirmed not to hold the key; if we can't
+        // tell, keep it (a stray claim is safe, a second owner is not).
+        const holds = await LinkModel.exists({ _id: linkId, keys: claimKey!.key }).then((r) => r !== null, () => null);
+        if (holds === false) await slugs.release(claimKey!.key, linkId).catch(() => undefined);
+        if (!holds) throw err;
+        matched = true; // the write landed; finish the steps that follow it
+      }
+      if (!matched) {
+        if (claimed) await slugs.release(claimKey!.key, linkId);
+        continue;
       }
 
+      // Post-write steps are idempotent (filtered by linkId, no upserts).
       if (p.rename) {
         const from = doc.slugKey;
         if (ctx.slug.rename === 'always') await Slug.deleteOne({ _id: from, linkId });
         else await Slug.updateOne({ _id: from, linkId }, { $set: { current: false } });
         if (p.rename.ownAlias) await Slug.updateOne({ _id: p.rename.to.key, linkId }, { $set: { current: true } });
       }
-      if (p.entries.length) await History.insertMany(p.entries.map((e) => ({ ...e, linkId })));
+      if (p.entries.length) {
+        await History.insertMany(p.entries.map((e) => ({ ...e, linkId })));
+        // A delete that landed since the write has already swept history; what
+        // we just inserted would be orphaned.
+        if (!(await LinkModel.exists({ _id: linkId }))) {
+          await Promise.all([History.deleteMany({ linkId }), Slug.deleteMany({ linkId })]);
+          throw notFound(id);
+        }
+      }
 
       const next = await requireDoc(id);
       const link = toLink(ctx, next);
@@ -388,6 +430,7 @@ export function createLinkService(ctx: ResolvedContext, slugs: SlugService, hook
       { _id: doc._id },
       {
         $set: { archived, updatedAt: ctx.now(), ...(actor ? { updatedBy: actor } : {}) },
+        $inc: { wv: 1 },
         ...(actor ? {} : { $unset: { updatedBy: 1 } }),
       },
     );
@@ -422,8 +465,19 @@ export function createLinkService(ctx: ResolvedContext, slugs: SlugService, hook
       Daily.deleteMany({ linkId }),
       Seen.deleteMany({ linkId }),
     ]);
+    // Final sweep: a writer that was mid-flight when the Link went may have
+    // inserted rows after the deletes above.
+    const [keys2, history2, clicks2] = await Promise.all([
+      Slug.deleteMany({ linkId }),
+      History.deleteMany({ linkId }),
+      Click.deleteMany({ linkId }),
+      Daily.deleteMany({ linkId }),
+      Seen.deleteMany({ linkId }),
+    ]);
     const summary: DeleteSummary = {
-      clicks: clicks.deletedCount, history: history.deletedCount, keys: keys.deletedCount,
+      clicks: clicks.deletedCount + clicks2.deletedCount,
+      history: history.deletedCount + history2.deletedCount,
+      keys: keys.deletedCount + keys2.deletedCount,
     };
     // A retry has no Link left to hand to the hooks.
     if (link) {

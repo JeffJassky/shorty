@@ -73,6 +73,12 @@ export function buildLinkSchema(): Schema {
       title: String, description: String, image: String, siteName: String, favicon: String, fetchedAt: Date,
     }, { _id: false }),
     rev: { type: Number, default: 1 },
+    // Write version: +1 on every write to the link's own fields (never on
+    // clicks); updateLink pins it in its filter. See LinkDoc.wv.
+    wv: { type: Number, default: 1 },
+    // Case mode the keys were computed under; ready() re-keys ck !== config.
+    // No default: the service stamps it from config. See LinkDoc.ck.
+    ck: { type: Boolean },
     clicks: { type: Number, default: 0 },
     uniqueClicks: { type: Number, default: 0 },
     botClicks: { type: Number, default: 0 },
