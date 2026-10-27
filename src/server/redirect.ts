@@ -21,6 +21,8 @@ export interface RedirectService {
   drain(): Promise<void>;
 }
 
+const LONE_PERCENT = /%(?![0-9A-Fa-f]{2})/g;
+const LONE_MARK = '__shorty_pct__';
 const CACHE_CONTROL = 'private, max-age=0';
 
 interface IncomingPart {
@@ -38,6 +40,18 @@ function safeDecode(value: string): string {
   }
 }
 
+/** Decoded text, or null when the escapes are malformed. */
+function tryDecode(value: string): string | null {
+  try {
+    return decodeURIComponent(value.replace(/\+/g, ' '));
+  } catch {
+    return null;
+  }
+}
+
+const MAX_QUERY_KEYS = 20;
+const MAX_QUERY_KEY_LENGTH = 64;
+
 /** The incoming query as ordered parts; bare keys stay bare. */
 function parseQuery(url: string): IncomingPart[] {
   const at = url.indexOf('?');
@@ -48,11 +62,21 @@ function parseQuery(url: string): IncomingPart[] {
   for (const piece of raw.split('&')) {
     if (!piece) continue;
     const eq = piece.indexOf('=');
-    const key = safeDecode(eq < 0 ? piece : piece.slice(0, eq));
+    const rawKey = eq < 0 ? piece : piece.slice(0, eq);
+    // A malformed key or value is forwarded as its raw text, untouched.
+    const decodedKey = tryDecode(rawKey);
+    const key = decodedKey ?? rawKey;
     if (!key) continue;
-    const encodedKey = encodeURIComponent(key);
-    const value = eq < 0 ? '' : safeDecode(piece.slice(eq + 1));
-    parts.push({ key, value, encoded: eq < 0 ? encodedKey : `${encodedKey}=${encodeURIComponent(value)}` });
+    const encodedKey = decodedKey === null ? rawKey : encodeURIComponent(key);
+    if (eq < 0) {
+      parts.push({ key, value: '', encoded: encodedKey });
+      continue;
+    }
+    const rawValue = piece.slice(eq + 1);
+    const decodedValue = tryDecode(rawValue);
+    const value = decodedValue ?? rawValue;
+    const encodedValue = decodedValue === null ? rawValue : encodeURIComponent(value);
+    parts.push({ key, value, encoded: `${encodedKey}=${encodedValue}` });
   }
   return parts;
 }
@@ -122,6 +146,10 @@ export function createRedirect(
 
   /** Run `task` after `ready` settles; `drain()` and `health().inFlight` see it from now. */
   function track(ready: Promise<void>, task: () => Promise<void>): void {
+    if (counters.inFlight >= ctx.clicks.maxInFlight) {
+      counters.dropped += 1;
+      return;
+    }
     counters.inFlight += 1;
     const run: Promise<void> = ready
       .then(task)
@@ -147,20 +175,23 @@ export function createRedirect(
 
   const later = (): Promise<void> => new Promise((resolve) => { setImmediate(resolve); });
 
-  function headers(res: Response, cache: boolean): void {
+  function headers(res: Response, cache: boolean, vary = false): void {
     if (ctx.redirect.noindex) res.setHeader('X-Robots-Tag', 'noindex');
     if (cache) res.setHeader('Cache-Control', CACHE_CONTROL);
+    if (vary) res.vary('User-Agent');
   }
 
-  function redirectTo(res: Response, status: number, location: string): void {
-    headers(res, status === 302 || status === 307);
+  function redirectTo(res: Response, status: number, location: string, vary = false): void {
+    headers(res, status === 302 || status === 307, vary);
     res.status(status);
-    res.location(location);
+    // Express's encodeUrl turns a lone `%` into `%25`; a malformed escape must forward verbatim.
+    res.location(location.replace(LONE_PERCENT, LONE_MARK));
+    res.setHeader('Location', String(res.getHeader('Location')).split(LONE_MARK).join('%'));
     res.end();
   }
 
-  function answer(res: Response, status: number, type: string, body: string, cache = false): void {
-    headers(res, cache);
+  function answer(res: Response, status: number, type: string, body: string, cache = false, vary = false): void {
+    headers(res, cache, vary);
     res.status(status).type(type).send(body);
   }
 
@@ -178,6 +209,20 @@ export function createRedirect(
     return problem ? null : key;
   }
 
+  /** One indexed lookup, bounded by `redirect.lookupTimeoutMs`; rejects at once if the connection isn't open. */
+  function lookup(key: string): Promise<LinkDoc | null> {
+    if (Link.db.readyState !== 1) return Promise.reject(new Error('shorty: database connection is not ready'));
+    return new Promise<LinkDoc | null>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        reject(new Error(`shorty: link lookup timed out after ${ctx.redirect.lookupTimeoutMs}ms`));
+      }, ctx.redirect.lookupTimeoutMs);
+      Promise.resolve(Link.findOne({ keys: key }).lean().exec()).then(
+        (found) => { clearTimeout(timer); resolve(found as LinkDoc | null); },
+        (err: unknown) => { clearTimeout(timer); reject(err); },
+      );
+    });
+  }
+
   async function handle(req: Request, res: Response, next: NextFunction): Promise<void> {
     if (req.method !== 'GET' && req.method !== 'HEAD') return next();
     // Read before next(): leaving the mount restores req.url, and with it req.path.
@@ -187,7 +232,7 @@ export function createRedirect(
 
     let doc: LinkDoc | null;
     try {
-      doc = (await Link.findOne({ keys: key }).lean()) as LinkDoc | null;
+      doc = await lookup(key);
     } catch (err) {
       return next(err);
     }
@@ -201,7 +246,7 @@ export function createRedirect(
         track(later(), () => clicks.recordMiss(path, req, at));
         return;
       }
-      if (mode === 'notFound') answer(res, 404, 'text/plain', 'Not Found');
+      if (mode === 'notFound') answer(res, 404, 'text/plain', 'Not Found', true);
       else redirectTo(res, 302, mode);
       track(sent(res), () => clicks.recordMiss(path, req, at));
       return;
@@ -209,8 +254,8 @@ export function createRedirect(
 
     if (isExpired(doc, at)) {
       const mode = doc.expiredUrl || ctx.redirect.onExpired;
-      if (mode === 'page') answer(res, 410, 'text/html; charset=utf-8', EXPIRED_PAGE);
-      else if (mode === 'notFound') answer(res, 404, 'text/plain', 'Not Found');
+      if (mode === 'page') answer(res, 410, 'text/html; charset=utf-8', EXPIRED_PAGE, true);
+      else if (mode === 'notFound') answer(res, 404, 'text/plain', 'Not Found', true);
       else redirectTo(res, 302, mode);
       return;
     }
@@ -221,9 +266,9 @@ export function createRedirect(
     const ua = req.get('user-agent') ?? '';
 
     if (isCrawler(ua) && doc.social && (doc.social.title || doc.social.description || doc.social.image)) {
-      answer(res, 200, 'text/html; charset=utf-8', socialCard(doc.social, location), true);
+      answer(res, 200, 'text/html; charset=utf-8', socialCard(doc.social, location), true, true);
     } else {
-      redirectTo(res, doc.redirect?.status ?? ctx.redirect.status, location);
+      redirectTo(res, doc.redirect?.status ?? ctx.redirect.status, location, true);
     }
 
     if (!ctx.clicks.enabled) return;
@@ -234,7 +279,7 @@ export function createRedirect(
       bot: isBotHit(req.method, ua),
       ua,
       qr: incoming.some((p) => p.key === 'qr' && p.value === '1'),
-      queryKeys: [...new Set(incoming.map((p) => p.key).filter((k) => k !== 'qr'))],
+      queryKeys: [...new Set(incoming.map((p) => p.key).filter((k) => k !== 'qr').map((k) => k.slice(0, MAX_QUERY_KEY_LENGTH)))].slice(0, MAX_QUERY_KEYS),
     };
     track(sent(res), () => clicks.record(input));
   }

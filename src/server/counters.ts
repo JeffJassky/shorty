@@ -14,7 +14,7 @@ export interface Counters {
   misses: number;
   /** Click pipelines still running. */
   inFlight: number;
-  /** Pipelines skipped at `clicks.maxInFlight`. Nothing increments it yet — PR 8. */
+  /** Pipelines skipped at `clicks.maxInFlight`. Incremented by the redirect router. */
   dropped: number;
 }
 
