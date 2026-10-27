@@ -106,6 +106,12 @@ const inspect: InspectConfig = {
   isAllowedAddress: () => true, userAgent: 'x',
 };
 const screenshot: ScreenshotAdapter = async () => ({ contentType: 'image/png', body: Buffer.from('') });
+const pinnedScreenshot: ScreenshotAdapter = async (url, ctx) => {
+  const pinned: string[] = ctx.addresses;
+  return pinned.length > 0 ? { contentType: 'image/png', body: Buffer.from(url) } : null;
+};
+// @ts-expect-error the adapter context carries addresses as strings
+const badScreenshot: ScreenshotAdapter = async (_url, ctx: { addresses: number[] }) => null;
 const track: TrackFn = (name, opts) => void [name, opts?.attrs, opts?.subjects];
 const logger: Logger = { warn: () => {} };
 const resolveUser: ResolveUser = (req) => defaultResolveUser(req);
