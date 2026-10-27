@@ -178,6 +178,17 @@ export function createClickService(ctx: ResolvedContext, hooks: HookRunner, coun
       ).lean()) as LinkDoc | null;
       if (!updated) return;
 
+      // Daily before Click: a failure between the writes leaves
+      // raw ≤ daily ≤ link counter, so `recount` (from Daily) never drops below
+      // the raw rows still held.
+      await bumpDaily(
+        linkId,
+        day,
+        bot
+          ? { bots: 1, botUniques: unique ? 1 : 0 }
+          : { clicks: 1, uniques: unique ? 1 : 0, qr: qr ? 1 : 0 },
+      );
+
       const ref = referrerOf(req);
       const agent = parseUa(ua);
       const created = await ClickModel.create({
@@ -195,13 +206,17 @@ export function createClickService(ctx: ResolvedContext, hooks: HookRunner, coun
       });
       stored = created.toObject() as ClickDoc;
 
-      await bumpDaily(
-        linkId,
-        day,
-        bot
-          ? { bots: 1, botUniques: unique ? 1 : 0 }
-          : { clicks: 1, uniques: unique ? 1 : 0, qr: qr ? 1 : 0 },
-      );
+      // A delete that landed mid-pipeline has already swept; the rows written
+      // since are orphans. The link is gone, so every row for it is garbage.
+      if (!(await Link.exists({ _id: linkId }))) {
+        await Promise.all([
+          ClickModel.deleteOne({ _id: created._id }),
+          ClickModel.deleteMany({ linkId }),
+          Daily.deleteMany({ linkId }),
+          Seen.deleteMany({ linkId }),
+        ]);
+        return;
+      }
     } catch (err) {
       failure('click pipeline', err);
       return;

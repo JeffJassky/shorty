@@ -757,7 +757,7 @@ export interface LinkDoc extends Omit<Link, 'id' | 'shortUrl' | 'aliases'> {
    * copy of the link. Typed optional only so projections type-check; every
    * stored link has it.
    */
-  wv?: number;
+  wv: number;
   /**
    * The `caseSensitive` mode `slugKey` / `keys` were computed under. Stamped
    * by every write that sets keys (create, rename, re-key). `ready()` re-keys
@@ -765,7 +765,7 @@ export interface LinkDoc extends Omit<Link, 'id' | 'shortUrl' | 'aliases'> {
    * re-keying; `MetaDoc` is advisory. Typed optional only so projections
    * type-check; every stored link has it.
    */
-  ck?: boolean;
+  ck: boolean;
 }
 
 /** `_id` is the slug key: the uniqueness authority across slugs AND aliases. */
