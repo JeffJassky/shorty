@@ -11,9 +11,13 @@ import type { Actor, CreateShortyConfig, ShortyInstance } from '../types/index.j
  * Shared harness. Real Express, real Mongo, real HTTP — no mocks
  * (standards/testing.md).
  *
- * Every harness gets its own model prefix AND collection prefix, so suites
- * running in one process never see each other's documents or collide in
- * mongoose's model registry (traps #2).
+ * One model prefix + collection prefix per TEST FILE (each file gets its own
+ * module instance of this helper), reused by every harness in that file and
+ * wiped between harnesses. Building fresh collections per test meant a text-
+ * index build per test — minutes per file, and timeouts under parallel load.
+ * Isolation is kept: before wiping, the previous harness's in-flight click
+ * pipelines are drained so a late write can't leak into the next test.
+ * Files never share prefixes, so parallel files can't see each other (traps #2).
  */
 
 let mongod: MongoMemoryServer | undefined;
@@ -84,14 +88,26 @@ export interface Harness {
 
 type AuthedRequest = Request & { testActor?: Actor | null };
 
-let counter = 0;
+const FILE_ID = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
+const live: ShortyInstance[] = [];
+
+/** Drain every earlier harness, then delete all documents in this file's collections. */
+async function resetFileCollections(collectionPrefix: string): Promise<void> {
+  await Promise.all(live.splice(0).map((s) => s.drain().catch(() => undefined)));
+  const db = mongoose.connection.db;
+  if (!db) return;
+  const names = (await db.listCollections({}, { nameOnly: true }).toArray())
+    .map((c) => c.name)
+    .filter((n) => n.startsWith(collectionPrefix));
+  await Promise.all(names.map((n) => db.collection(n).deleteMany({})));
+}
 
 export async function harness(opts: HarnessOptions = {}): Promise<Harness> {
-  const id = `${Date.now().toString(36)}${(counter++).toString(36)}`;
   const mount = opts.mount ?? '/go';
   const clock = makeClock();
   const session: { actor: Actor | null } = { actor: { id: 'u_1', name: 'Ann Admin' } };
-  const prefixes = { modelPrefix: `T${id}`, collectionPrefix: `t${id}_` };
+  const prefixes = { modelPrefix: `T${FILE_ID}`, collectionPrefix: `t${FILE_ID}_` };
+  await resetFileCollections(opts.config?.collectionPrefix ?? prefixes.collectionPrefix);
 
   const config: CreateShortyConfig = {
     connection: mongoose,
@@ -104,6 +120,7 @@ export async function harness(opts: HarnessOptions = {}): Promise<Harness> {
   };
 
   const shorty = createShorty(config);
+  live.push(shorty);
   if (!opts.skipReady) await shorty.ready();
 
   const app = express();
