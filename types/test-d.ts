@@ -202,6 +202,9 @@ async function api(s: ShortyInstance, req: Request) {
 async function storage(models: ShortyModels) {
   const link: LinkDoc | null = await models.Link.findOne({ keys: 'spring' }).lean<LinkDoc>();
   const keys: string[] | undefined = link?.keys;
+  const wv: number | undefined = link?.wv;
+  const ck: boolean | undefined = link?.ck;
+  void [wv, ck];
   const slugDoc: SlugDoc | null = await models.Slug.findById('spring').lean<SlugDoc>();
   const hist: HistoryDoc[] = await models.History.find().lean<HistoryDoc[]>();
   const click: ClickDoc | null = await models.Click.findOne().lean<ClickDoc>();

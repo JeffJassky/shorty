@@ -52,7 +52,7 @@ function isPublicV4([a, b, c]: number[]): boolean {
   if (a === 172 && b >= 16 && b <= 31) return false;           // RFC 1918
   if (a === 192 && b === 0 && c === 0) return false;           // IETF protocol assignments
   if (a === 192 && b === 0 && c === 2) return false;           // TEST-NET-1
-  if (a === 192 && b === 88 && c === 99) return false;        // 6to4 relay anycast (deprecated)
+  if (a === 192 && b === 88 && c === 99) return false;         // 6to4 relay anycast (deprecated)
   if (a === 192 && b === 168) return false;                    // RFC 1918
   if (a === 198 && (b === 18 || b === 19)) return false;       // benchmarking
   if (a === 198 && b === 51 && c === 100) return false;        // TEST-NET-2
@@ -135,6 +135,7 @@ function requestHop(url: URL, addresses: string[], cfg: InspectCtx, signal: Abor
     const chunks: Buffer[] = [];
     let size = 0;
     let parsedAt = 0;
+    let pending = false;   // a marker was seen but its parse was skipped by the doubling rule
     let done = false;
 
     const finish = (err?: Error): void => {
@@ -192,9 +193,12 @@ function requestHop(url: URL, addresses: string[], cfg: InspectCtx, signal: Abor
         if (size >= cfg.maxBytes) { finish(); return; }
         // Cheap pre-filter, then ask the tokenizer: a `</head` inside a
         // <script> or comment is not the end of the head.
-        // Re-parse only once the buffer has doubled since the last parse: linear in total.
-        if ((window.includes('</head') || window.includes('<body')) && size >= parsedAt * 2) {
+        // Re-parse only once the buffer has doubled since the last parse (linear in total);
+        // a marker seen while waiting is remembered so a decoy cannot hide the real end.
+        if (window.includes('</head') || window.includes('<body')) pending = true;
+        if (pending && size >= parsedAt * 2) {
           parsedAt = size;
+          pending = false;
           if (parseHead(Buffer.concat(chunks).toString('latin1'), url.href).ended) finish();
         }
       });
@@ -207,17 +211,26 @@ function requestHop(url: URL, addresses: string[], cfg: InspectCtx, signal: Abor
 
 // ── the chain ───────────────────────────────────────────────────────────────
 
-export interface FetchOutcome {
-  chain: Array<{ url: string; status: number }>;
-  /** Set when a hop answered and the chain ended there. */
-  final?: { url: string; status: number; ms: number };
-  headers?: http.IncomingHttpHeaders;
-  /** The checked addresses the final hop connected to. */
-  addresses?: string[];
-  /** Raw head bytes, `text/html` only. */
-  body?: Buffer;
-  failure?: 'private_address' | 'unreachable';
-}
+export type FetchOutcome =
+  | {
+      chain: Array<{ url: string; status: number }>;
+      /** A hop answered and the chain ended there. */
+      final: { url: string; status: number; ms: number };
+      headers: http.IncomingHttpHeaders;
+      /** The checked addresses the final hop connected to. */
+      addresses: string[];
+      /** Raw head bytes, `text/html` only. */
+      body?: Buffer;
+      failure?: undefined;
+    }
+  | {
+      chain: Array<{ url: string; status: number }>;
+      final?: undefined;
+      headers?: undefined;
+      addresses?: undefined;
+      body?: undefined;
+      failure: 'private_address' | 'unreachable';
+    };
 
 const REDIRECT = (s: number): boolean => s >= 300 && s < 400;
 const bare = (u: URL): string => { const c = new URL(u.href); c.hash = ''; return c.href; };
@@ -243,7 +256,7 @@ async function checkedAddresses(url: URL, cfg: InspectCtx, signal: AbortSignal):
 }
 
 export async function safeFetch(start: URL, cfg: InspectCtx, signal: AbortSignal, t0: number): Promise<FetchOutcome> {
-  const out: FetchOutcome = { chain: [] };
+  const out: { chain: Array<{ url: string; status: number }> } = { chain: [] };
   const seen = new Set<string>();
   let url = start;
   let redirects = 0;

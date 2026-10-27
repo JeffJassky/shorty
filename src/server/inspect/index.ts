@@ -105,7 +105,7 @@ export function createInspect(ctx: ResolvedContext): (url: string) => Promise<In
             const onAbort = (): void => resolve(null);
             ac.signal.addEventListener('abort', onAbort, { once: true });
             Promise.resolve()
-              .then(() => shoot(final.url, { addresses: fetched.addresses ?? [] }))
+              .then(() => shoot(final.url, { addresses: fetched.addresses }))
               .then(resolve, () => resolve(null))
               .finally(() => ac.signal.removeEventListener('abort', onAbort));
           });
