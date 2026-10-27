@@ -1079,3 +1079,15 @@ describe('End review (b) follow-ups', () => {
     }
   });
 });
+
+describe('inspect — a connect that fails instantly', () => {
+  // CI runners without an IPv6 route fail connect() synchronously
+  // (ENETUNREACH); locally 255.255.255.255 does the same (EAFNOSUPPORT).
+  // The error must surface as a warning, never as an unhandled 'error' event.
+  it('does not leak an unhandled socket error when connect fails synchronously', async () => {
+    const shorty = await inspector({ isAllowedAddress: () => true, lookup: async () => ['255.255.255.255'] });
+    const r = await shorty.inspect('http://instant-fail.test:9/');
+    expect(codes(r)).toContain('unreachable');
+    expect(r.final).toBeUndefined();
+  });
+});

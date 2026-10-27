@@ -166,9 +166,15 @@ function requestHop(url: URL, addresses: string[], cfg: InspectCtx, signal: Abor
       },
       // The ONLY resolution that happens at connect time: hand back the
       // addresses that already passed the policy. Node never asks DNS.
+      // Called back on the next tick, like real DNS: a synchronous callback lets
+      // an instant connect failure (ENETUNREACH on hosts without an IPv6 route)
+      // fire the socket's 'error' before ClientRequest has attached its handler,
+      // which surfaces as an uncaught exception in the host process.
       lookup: ((_h: string, opts: { all?: boolean }, cb: (...a: unknown[]) => void) => {
-        if (opts && opts.all) cb(null, entries);
-        else cb(null, entries[0].address, entries[0].family);
+        process.nextTick(() => {
+          if (opts && opts.all) cb(null, entries);
+          else cb(null, entries[0].address, entries[0].family);
+        });
       }) as unknown as net.LookupFunction,
     };
     if (secure && !net.isIP(host)) options.servername = host;   // SNI + cert name stay the hostname
