@@ -41,9 +41,12 @@ first request. The authoritative declarations, with full doc comments, are in
 | `status` | `302` | `301 \| 302 \| 307 \| 308`. Per-link override wins. |
 | `forwardQuery` | `true` | Append incoming params to the destination. Per-link override. |
 | `noindex` | `true` | Send `X-Robots-Tag: noindex` on every redirect. |
-| `onMiss` | `'next'` | `'next'`, `'notFound'`, or an absolute URL (302). |
-| `onExpired` | `'page'` | `'page'` (410 + HTML), `'notFound'`, or a URL. A link's `expiredUrl` wins. |
-| `lookupTimeoutMs` | set in 0.1 | **0.1.** Bounds the slug lookup so a slow database cannot hold redirects open. |
+| `onMiss` | `'next'` | `'next'`, `'notFound'`, or an absolute http(s) URL (302). |
+| `onExpired` | `'page'` | `'page'` (410 + HTML), `'notFound'`, or an absolute http(s) URL. A link's `expiredUrl` wins. |
+| `lookupTimeoutMs` | `2000` | Budget in ms for the slug lookup; must be > 0. If the Mongo connection is not open the request is handed off immediately; if the budget runs out it goes to `next(err)` with a plain `Error` and your error handler answers. Redirects never stall your own routes at a root mount. |
+
+`onMiss` and `onExpired` are validated at `createShorty`: anything other than a
+mode or an absolute http(s) URL throws a `TypeError` naming the key.
 
 ## `destinations`
 
@@ -66,7 +69,7 @@ Pass `false` to disable recording, or an object:
 | `timezone` | `'UTC'` | IANA zone that defines a "day" for rollups and stats ranges. |
 | `geo` | CDN headers | `(req) => { country?, region?, city? }`. Default reads `cf-ipcountry`, `x-vercel-ip-country`, `cloudfront-viewer-country` (country only). No GeoIP database ships. |
 | `ip` | `req.ip` | `(req) => string`. You own `trust proxy`. |
-| `maxInFlight` | set in 0.1 | **0.1.** Caps click pipelines running at once. Hits beyond it are counted in `health().dropped` rather than queued. |
+| `maxInFlight` | `10000` | Positive integer. Click and miss pipelines above it are skipped (no rows, no hooks, no `track`) and counted in `health().dropped`. The redirect itself is unaffected. |
 
 ## `inspect`
 

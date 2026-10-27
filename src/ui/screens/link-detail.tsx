@@ -67,7 +67,7 @@ export function LinkDetailScreen({ id }: { id: string }) {
           </div>
         ) : <div className="skeleton" style={{ height: 64, flex: 1 }} />}
         <div className="right">
-          {link && <a className="btn" href={hrefs.edit(link.id)}><Icons.Edit /> Edit</a>}
+          {link && <a className="btn" href={hrefs.edit(link.id, 'detail')}><Icons.Edit /> Edit</a>}
         </div>
       </header>
 

@@ -56,7 +56,17 @@ app.use(vhost('go.acme.com', shorty.redirect));
 |---|---|---|
 | Unknown slug | `next()` | `redirect.onMiss`: `'next'`, `'notFound'` (404), or a URL (302) |
 | Expired link | 410 + minimal HTML | `redirect.onExpired`: `'page'`, `'notFound'`, or a URL; a link's own `expiredUrl` wins |
-| Database down | `next(err)` | your error handler answers |
+| Database down, connection not open, or lookup over `redirect.lookupTimeoutMs` (2000 ms) | `next(err)` with a plain `Error` | your error handler answers within the budget |
+
+## Caching headers
+
+- Every link redirect (any status) and social-card response carries
+  `Vary: User-Agent`, because crawlers get the card and people get the redirect.
+- 302/307 redirects, the card, and shorty's own 404 (`'notFound'`) and 410
+  (expired page) carry `Cache-Control: private, max-age=0`. Link state can
+  change, so none of them may be cached as final.
+- A `Location` is built with shorty's own encoder; a forwarded query value
+  with a malformed `%` escape is passed through verbatim.
 
 ## Body parser and guard
 

@@ -33,10 +33,12 @@ type SlugState =
 interface SaveError { code: string; message: string }
 
 /** Route-level wrapper: loads the link in edit mode, then renders the form in a sheet. */
-export function LinkFormScreen({ mode, id }: { mode: 'new' | 'edit'; id?: string }) {
+export function LinkFormScreen({ mode, id, from }: { mode: 'new' | 'edit'; id?: string; from?: 'detail' }) {
   const { client, config } = useApp();
   const loaded = useAsync<LinkJson | null>(() => (mode === 'edit' && id ? client.link(id) : Promise.resolve(null)), [client, mode, id]);
-  const close = React.useCallback(() => navigate(hrefs.list), []);
+  // Opened from a link's detail page → go back there; otherwise the list.
+  const close = React.useCallback(() => navigate(from === 'detail' && id ? hrefs.detail(id) : hrefs.list), [from, id]);
+  const gone = React.useCallback(() => navigate(hrefs.list), []);
 
   if (mode === 'edit' && loaded.status !== 'ready') {
     return (
@@ -49,13 +51,17 @@ export function LinkFormScreen({ mode, id }: { mode: 'new' | 'edit'; id?: string
     );
   }
   const link = loaded.status === 'ready' ? loaded.data : null;
-  return <LinkForm key={link?.id ?? 'new'} initialLink={link} config={config} onClose={close} />;
+  return <LinkForm key={link?.id ?? 'new'} initialLink={link} config={config} onClose={close} onGone={gone} closeAfterSave={from === 'detail'} />;
 }
 
-function LinkForm({ initialLink, config, onClose }: {
+function LinkForm({ initialLink, config, onClose, onGone, closeAfterSave }: {
   initialLink: LinkJson | null;
   config: ReturnType<typeof useApp>['config'];
   onClose: () => void;
+  /** The link no longer exists (deleted) — nowhere to go back to but the list. */
+  onGone: () => void;
+  /** Opened from the detail page: saving returns there instead of staying in the sheet. */
+  closeAfterSave?: boolean;
 }) {
   const { client, bumpLinks } = useApp();
   const toast = useToast();
@@ -159,7 +165,9 @@ function LinkForm({ initialLink, config, onClose }: {
         : await client.createLink(buildCreate(draft, config, og));
       bumpLinks();
       toast('Link saved', { copy: saved.shortUrl });
-      if (editing) {
+      if (editing && closeAfterSave) {
+        onClose();
+      } else if (editing) {
         setLink(saved);
         const next = draftFromLink(saved, config, { keepSlug: true });
         setDraft(next);
@@ -362,7 +370,7 @@ function LinkForm({ initialLink, config, onClose }: {
                 </aside>
               )}
             </div>
-            {editing && link && <History link={link} onDeleted={() => { bumpLinks(); toast('Link deleted'); onClose(); }} />}
+            {editing && link && <History link={link} onDeleted={() => { bumpLinks(); toast('Link deleted'); onGone(); }} />}
           </div>
 
           <footer className="sheet-foot">

@@ -1,5 +1,15 @@
 # Link previews & SSRF
 
+::: danger If you pass a `screenshot` adapter, egress is YOUR responsibility
+shorty's safe fetch protects only its own requests. The adapter is called as
+`screenshot(url, { addresses })` with a URL that is **not validated for the
+adapter's own fetch**. The adapter MUST enforce its own egress policy: pin the
+browser's resolver to `addresses`, intercept requests and refuse non-public
+addresses, or run it in a sandboxed network. Otherwise DNS rebinding, script
+redirects and subresources can reach `127.0.0.1` or `169.254.169.254`, and the
+screenshot hands the pixels back. Details [below](#screenshot-adapter).
+:::
+
 `shorty.inspect(url)` (and `POST /inspect`, used by the form) fetches a
 destination and returns:
 
@@ -30,6 +40,18 @@ forgery vector, so the fetch:
 - ignores proxy environment variables.
 
 ### Address policy
+
+The default policy allows **public unicast only**:
+
+- **IPv4** refuses 0/8, 10/8, 100.64/10, 127/8, 169.254/16 (cloud metadata),
+  172.16/12, 192.0.0/24, 192.0.2/24, 192.88.99/24, 192.168/16, 198.18/15,
+  198.51.100/24, 203.0.113/24 and 224/4 and above.
+- **IPv6** allows **only 2000::/3**, minus Teredo (2001::/32), 2001:2::/48,
+  2001:10::/28, 2001:20::/28, documentation (2001:db8::/32), 6to4 (2002::/16)
+  embedding a refused IPv4, and 3fff::/20. Everything outside 2000::/3 is
+  refused (`::`, `::1`, `fc00::/7`, `fe80::/10`, multicast, unallocated space),
+  except `::ffff:0:0/96` and `64:ff9b::/96`, which are judged by the IPv4 they
+  embed.
 
 `inspect.isAllowedAddress(ip)` replaces the default table. Override it for an
 **intranet** deployment that previews internal destinations, or to tighten it:

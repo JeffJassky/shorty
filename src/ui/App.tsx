@@ -73,15 +73,15 @@ export default function App({ config }: { config: UiRuntimeConfig }) {
           <main className="content">
             <div className="content-inner">
               {/* The list stays mounted (hidden) behind detail and analytics so filters and scroll survive the round trip. */}
-              <div hidden={route.name === 'detail' || route.name === 'analytics'}>
+              <div hidden={route.name === 'detail' || route.name === 'analytics' || (route.name === 'edit' && route.from === 'detail')}>
                 <LinksScreen active={route.name === 'list'} />
               </div>
-              {route.name === 'detail' && <LinkDetailScreen key={route.id} id={route.id} />}
+              {(route.name === 'detail' || (route.name === 'edit' && route.from === 'detail')) && <LinkDetailScreen key={route.id} id={route.id} />}
               {route.name === 'analytics' && <AnalyticsScreen />}
             </div>
           </main>
           {route.name === 'new' && <LinkFormScreen key="new" mode="new" />}
-          {route.name === 'edit' && <LinkFormScreen key={route.id} mode="edit" id={route.id} />}
+          {route.name === 'edit' && <LinkFormScreen key={route.id} mode="edit" id={route.id} from={route.from} />}
         </div>
       </ToastProvider>
     </AppContext.Provider>

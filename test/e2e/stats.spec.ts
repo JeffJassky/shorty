@@ -64,6 +64,21 @@ test('7b. a row click on the list opens the detail; Edit stays in the menu', asy
   await expect(page.getByRole('link', { name: 'Edit' })).toBeVisible();
 });
 
+test('7c. Edit from the detail page returns to the detail page on close and on save', async ({ page }) => {
+  await page.goto(`./#/links/${link.id}`);
+  await page.getByRole('link', { name: 'Edit' }).click();
+  await expect(page.getByRole('dialog', { name: /link/i }).first()).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(page).toHaveURL(new RegExp(`#/links/${link.id}$`));
+  await expect(page.getByRole('link', { name: 'Edit' })).toBeVisible();
+
+  await page.getByRole('link', { name: 'Edit' }).click();
+  await page.locator('#f-title').fill('Renamed from detail');
+  await page.getByRole('button', { name: 'Save' }).click();
+  await expect(page).toHaveURL(new RegExp(`#/links/${link.id}$`));
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText('Renamed from detail');
+});
+
 test('8. analytics overview lists the link under Top links', async ({ page }) => {
   await page.goto('./#/analytics');
   const top = page.getByRole('region', { name: 'Top links' });

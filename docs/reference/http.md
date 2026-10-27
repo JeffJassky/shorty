@@ -43,4 +43,6 @@ Literal routes (`/stats`, `/params`, `/slugs/...`) are declared before `/:id`.
 | Unknown slug | `onMiss` (`next()` by default) |
 | Not a slug, or not GET/HEAD | `next()` |
 
+Every link redirect and card carries `Vary: User-Agent`; shorty's own 404 and 410 carry `Cache-Control: private, max-age=0`. A lookup failure or `lookupTimeoutMs` overrun calls `next(err)`.
+
 `?qr=1` marks a QR scan and is stripped before forwarding.

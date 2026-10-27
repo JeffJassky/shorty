@@ -44,7 +44,7 @@ Event names, each with `subjects: [{ type: 'shorty_link', id }]`:
 
 ```js
 shorty.health();
-// { clickFailures, hookFailures, misses, inFlight, clicksEnabled }
+// { clickFailures, hookFailures, misses, inFlight, dropped, clicksEnabled }
 ```
 
 | Field | Meaning |
@@ -54,7 +54,7 @@ shorty.health();
 | `misses` | Unknown-slug requests. |
 | `inFlight` | Click pipelines still running. |
 | `clicksEnabled` | False with no pepper or `clicks: false`. |
-| `dropped` | **0.1.** Hits not recorded because `clicks.maxInFlight` was reached. |
+| `dropped` | Pipelines skipped because `clicks.maxInFlight` was reached. The redirect still happened. |
 
 Export these to your own metrics. A rising `clickFailures` means analytics are
 losing data while redirects keep working.

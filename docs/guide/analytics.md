@@ -16,7 +16,7 @@ For every hit shorty writes one raw click row (kept `retentionDays`, default
 | `referrerHost`, `referrer` | Host (no `www.`) and origin + path. Query and fragment are never stored. |
 | `country`, `region`, `city` | Only what your `geo` adapter (or CDN headers) provides. |
 | `browser`, `os`, `device` | From the user agent. |
-| `queryKeys` | Keys of the incoming query. **Values are never stored.** |
+| `queryKeys` | Keys of the incoming query: at most 20 distinct keys (first seen), each truncated to 64 characters, `qr` excluded. **Values are never stored.** |
 
 **No IP address is stored**, raw or truncated.
 
