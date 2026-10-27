@@ -100,18 +100,26 @@ export function createClickService(ctx: ResolvedContext, hooks: HookRunner, coun
    * conditional update, so racing hits can't both win).
    */
   async function claimUnique(linkId: Types.ObjectId, seenKey: string, at: Date): Promise<boolean> {
-    try {
-      await Seen.create({ linkId, visitor: seenKey, at });
-      return true;
-    } catch (err) {
-      if (!isDuplicateKey(err)) throw err;
-    }
+    const create = async (): Promise<boolean> => {
+      try {
+        await Seen.create({ linkId, visitor: seenKey, at });
+        return true;
+      } catch (err) {
+        if (!isDuplicateKey(err)) throw err;
+        return false;
+      }
+    };
+    if (await create()) return true;
     const cutoff = new Date(at.getTime() - windowMs);
     const replaced = await Seen.findOneAndUpdate(
       { linkId, visitor: seenKey, at: { $lte: cutoff } },
       { $set: { at } },
     ).lean();
-    return replaced !== null;
+    if (replaced !== null) return true;
+    // Null means either "still inside the window" or "the TTL monitor deleted
+    // the row between our create and our update". Try the create once more:
+    // a second duplicate key is a genuine repeat.
+    return create();
   }
 
   async function bumpDaily(linkId: Types.ObjectId, day: string, inc: Record<string, number>): Promise<void> {
@@ -160,6 +168,16 @@ export function createClickService(ctx: ResolvedContext, hooks: HookRunner, coun
       const visitor = visitorHash(day, ctx.clicks.ip(req) ?? '', ua, String(linkId));
       const unique = await claimUnique(linkId, `${bot ? 'b' : 'h'}:${visitor}`, at);
 
+      // Link first: a link deleted since the lookup gets no orphan rows and no hooks.
+      updated = (await Link.findOneAndUpdate(
+        { _id: linkId },
+        bot
+          ? { $inc: { botClicks: 1 } }
+          : { $inc: { clicks: 1, uniqueClicks: unique ? 1 : 0 }, $max: { lastClickedAt: at } },
+        { returnDocument: 'after' },
+      ).lean()) as LinkDoc | null;
+      if (!updated) return;
+
       const ref = referrerOf(req);
       const agent = parseUa(ua);
       const created = await ClickModel.create({
@@ -184,13 +202,6 @@ export function createClickService(ctx: ResolvedContext, hooks: HookRunner, coun
           ? { bots: 1, botUniques: unique ? 1 : 0 }
           : { clicks: 1, uniques: unique ? 1 : 0, qr: qr ? 1 : 0 },
       );
-      updated = (await Link.findOneAndUpdate(
-        { _id: linkId },
-        bot
-          ? { $inc: { botClicks: 1 } }
-          : { $inc: { clicks: 1, uniqueClicks: unique ? 1 : 0 }, $set: { lastClickedAt: at } },
-        { returnDocument: 'after' },
-      ).lean()) as LinkDoc | null;
     } catch (err) {
       failure('click pipeline', err);
       return;
@@ -198,7 +209,7 @@ export function createClickService(ctx: ResolvedContext, hooks: HookRunner, coun
 
     // The click exists: tell the host. Hook and track failures are counted by
     // the runner and never touch `clickFailures`.
-    const link = toLink(ctx, updated ?? doc);
+    const link = toLink(ctx, updated);
     const click = toClick(stored as ClickDoc & { _id: Types.ObjectId });
     await hooks.hook('onClick', { link, click, req });
     await hooks.track('shorty.clicked', link.id, {
