@@ -592,3 +592,62 @@ describe('paramValues — freshness and edges (audit follow-up)', () => {
     expect(at51.count).toBe(51);
   });
 });
+
+describe('PR 4 review follow-ups', () => {
+  it('does not pull the previous evening into a day whose midnight does not exist (DST at 00:00)', async () => {
+    // America/Santiago jumped 00:00 → 01:00 on 2022-09-11 (04:00Z). The day
+    // starts at 04:00Z; 03:30Z is still 23:30 on Sep 10 locally.
+    const h = await harness({ config: { clicks: { timezone: 'America/Santiago' } } });
+    h.clock.set('2022-09-20T12:00:00.000Z');
+    const link = await h.shorty.createLink({ url: 'https://example.com/a' });
+    const base = { linkId: new Types.ObjectId(link.id), rev: 1, unique: true, bot: false, qr: false, device: 'desktop' as const };
+    await h.shorty.models.Click.insertMany([
+      { ...base, at: new Date('2022-09-11T03:30:00Z'), visitor: 'before', referrerHost: 'evening.test' },
+      { ...base, at: new Date('2022-09-11T04:30:00Z'), visitor: 'after', referrerHost: 'morning.test' },
+    ]);
+    const s = await h.shorty.stats({ linkId: link.id, from: '2022-09-11', to: '2022-09-11' });
+    expect(s.breakdowns.referrer.map((r) => r.key)).toEqual(['morning.test']);
+    // …and as the END of a range, Sep 10 keeps its last hour.
+    const prev = await h.shorty.stats({ linkId: link.id, from: '2022-09-10', to: '2022-09-10' });
+    expect(prev.breakdowns.referrer.map((r) => r.key)).toEqual(['evening.test']);
+  });
+
+  it('does not drop a popular key from the catalog when there are more than 1000 keys', async () => {
+    const h = await harness();
+    const now = h.clock.now;
+    const doc = (i: number, params: Array<{ key: string; value: string }>) => ({
+      slug: `s${i}`, slugKey: `s${i}`, keys: [`s${i}`], aliases: [], origin: 'custom',
+      baseUrl: 'https://example.com/', utm: {}, params, destination: `https://example.com/?x=${i}`,
+      tags: [], redirect: {}, rev: 1, clicks: 0, uniqueClicks: 0, botClicks: 0, archived: false,
+      createdAt: now, updatedAt: now,
+    });
+    const docs = [];
+    for (let i = 0; i < 1100; i++) docs.push(doc(i, [{ key: `rare_${i}`, value: 'x' }]));
+    for (let i = 0; i < 5; i++) docs.push(doc(2000 + i, [{ key: 'popular', value: `v${i % 2}` }]));
+    await h.shorty.models.Link.insertMany(docs);
+    const catalog = await h.shorty.paramValues();
+    const popular = catalog.find((k) => k.key === 'popular');
+    expect(popular).toBeDefined();
+    expect(popular!.count).toBe(5);
+    expect(popular!.values.map((v) => [v.value, v.count])).toEqual([['v0', 3], ['v1', 2]]);
+  });
+
+  it('does not keep more than 50 values per key in memory-shaped output (values capped, truncated set)', async () => {
+    const h = await harness();
+    const now = h.clock.now;
+    const docs = [];
+    for (let i = 0; i < 300; i++) {
+      docs.push({
+        slug: `c${i}`, slugKey: `c${i}`, keys: [`c${i}`], aliases: [], origin: 'custom',
+        baseUrl: 'https://example.com/', utm: { content: `variant_${i}` }, params: [],
+        destination: `https://example.com/?utm_content=variant_${i}`, tags: [], redirect: {}, rev: 1,
+        clicks: 0, uniqueClicks: 0, botClicks: 0, archived: false, createdAt: now, updatedAt: now,
+      });
+    }
+    await h.shorty.models.Link.insertMany(docs);
+    const row = (await h.shorty.paramValues()).find((k) => k.key === 'utm_content');
+    expect(row?.values).toHaveLength(50);
+    expect(row?.truncated).toBe(true);
+    expect(row?.count).toBe(300);
+  });
+});

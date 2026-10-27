@@ -370,6 +370,11 @@ export interface ClickEvent {
   req: Request;
 }
 
+/**
+ * `uniques` is visitor-DAYS: the visitor hash rotates daily (§7.2), so a person
+ * seen on three days counts three times in a week/month bucket or a total.
+ * That is the privacy design, not an approximation to fix.
+ */
 export interface HumanCounts {
   clicks: number;
   uniques: number;
