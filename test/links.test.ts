@@ -1382,3 +1382,16 @@ describe('links() — cursor input', () => {
     }
   });
 });
+
+describe('baseUrl normalization (end review a)', () => {
+  it('does not store a raw baseUrl that the redirect would send malformed', async () => {
+    const h = await harness();
+    const a = await h.shorty.createLink({ baseUrl: 'https://EX\tAMPLE.com', utm: { source: 'ig' } });
+    expect(a.baseUrl).toBe('https://example.com/');
+    expect(a.destination).toBe('https://example.com/?utm_source=ig');
+    const b = await h.shorty.createLink({ url: 'https://bücher.example/path' });
+    expect(b.baseUrl).toBe('https://xn--bcher-kva.example/path');
+    const c = await h.shorty.updateLink(a.id, { baseUrl: 'https://Other.com/x' });
+    expect(c.baseUrl).toBe('https://other.com/x');
+  });
+});

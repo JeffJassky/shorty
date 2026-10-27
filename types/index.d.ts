@@ -78,6 +78,9 @@ export interface Param {
  * `baseUrl` is scheme + host + path ONLY: absolute, http(s), no query, no
  * fragment. A `baseUrl` carrying `?` or `#` is `invalid_base_url` — callers
  * holding a full URL use `parseUrl` (or pass `url` to `createLink`).
+ * Links STORE `baseUrl` in WHATWG-serialized form (`new URL(x)` →
+ * protocol//host/path): host lowercased and punycoded, tabs/newlines removed,
+ * `https://a.com` → `https://a.com/`. What the redirect sends is always that form.
  */
 export interface UrlParts {
   baseUrl: string;
