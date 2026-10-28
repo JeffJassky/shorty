@@ -14,9 +14,9 @@ export default defineConfig({
   lastUpdated: true,
   cleanUrls: true,
   head: [
-    ['meta', { name: 'theme-color', content: '#2563eb' }],
+    ['meta', { name: 'theme-color', content: '#0d9488' }],
     ['meta', { property: 'og:type', content: 'website' }],
-    ['meta', { property: 'og:title', content: 'shorty — Shorty' }],
+    ['meta', { property: 'og:title', content: 'shorty' }],
     ['meta', { property: 'og:description', content: 'Self-hosted short links for Express + MongoDB: UTM builder, click analytics, React admin UI' }],
   ],
   themeConfig: {
@@ -34,22 +34,26 @@ export default defineConfig({
           items: [
             { text: 'Introduction', link: '/guide/introduction' },
             { text: 'Quickstart', link: '/guide/quickstart' },
+            { text: 'Requirements', link: '/guide/requirements' },
+          ],
+        },
+        {
+          text: 'Using shorty',
+          items: [
+            { text: 'Mounting & route order', link: '/guide/mounting' },
             { text: 'Configuration', link: '/guide/configuration' },
+            { text: 'Slugs & renaming', link: '/guide/slugs' },
+            { text: 'UTM & parameters', link: '/guide/utm' },
+            { text: 'Admin UI', link: '/guide/ui' },
           ],
         },
         {
-          text: 'Integrating',
+          text: 'Going deeper',
           items: [
-            { text: 'The user adapter', link: '/guide/user-adapter' },
-            { text: 'The UI', link: '/guide/ui' },
-            { text: 'Data model', link: '/guide/data-model' },
-          ],
-        },
-        {
-          text: 'Operating',
-          items: [
-            { text: 'Account deletion', link: '/guide/account-deletion' },
-            { text: 'Testing', link: '/guide/testing' },
+            { text: 'Click analytics & privacy', link: '/guide/analytics' },
+            { text: 'Hooks & telemetry', link: '/guide/hooks' },
+            { text: 'Link previews & SSRF', link: '/guide/inspect' },
+            { text: 'Scaling notes', link: '/guide/scaling' },
           ],
         },
       ],
@@ -57,23 +61,11 @@ export default defineConfig({
         {
           text: 'API',
           items: [
-            { text: 'createShorty', link: '/reference/factory' },
-            { text: 'Routers', link: '/reference/routers' },
-            { text: 'UI routers', link: '/reference/ui-routers' },
+            { text: 'Factory & instance', link: '/reference/factory' },
+            { text: 'HTTP API', link: '/reference/http' },
             { text: 'Client', link: '/reference/client' },
-            { text: 'Model factory', link: '/reference/model' },
+            { text: 'Types', link: '/reference/types' },
           ],
-        },
-        {
-          text: 'HTTP',
-          items: [
-            { text: 'Public API', link: '/reference/http-public' },
-            { text: 'Admin API', link: '/reference/http-admin' },
-          ],
-        },
-        {
-          text: 'Types',
-          items: [{ text: 'Types & payloads', link: '/reference/types' }],
         },
       ],
     },
@@ -84,7 +76,7 @@ export default defineConfig({
     },
     footer: {
       message: 'Released under the MIT License.',
-      copyright: 'Copyright © __YEAR__ Jeff Jassky',
+      copyright: 'Copyright © 2026 Jeff Jassky',
     },
     search: { provider: 'local' },
   },

@@ -6,7 +6,7 @@ Dub, Bitly, Short.io, Rebrandly, Shlink, Kutt and YOURLS. Config keys below cite
 that consensus instead of a recon (process/3-build-plan.md, "be suspicious of
 keys you invented" — each one names the products that prove it).
 
-Status: **approved** (2026-10-26, via `/scaffold shorty`). Decisions taken from the user:
+Status: **approved** (2026-10-26, via `/scaffold shorty`). 2026-10-28 owner decision: no user adapter (no user-specific functionality; hooks still receive req) and no screenshot adapter (previews are OG-only). Decisions taken from the user:
 name `shorty`; built-in click storage + dashboard; admin and public mount paths
 are both the host's choice, and shorty is agnostic to route order; editing
 allowed "within reason" (defined in §7.3); create form offers auto-generated or
@@ -35,6 +35,8 @@ const shorty = createShorty({
   onClick: (e) => analytics.capture(e),   // optional hooks, see §3
 })
 
+await shorty.ready()                    // indexes, TTL reconcile, case-mode re-key
+
 app.use('/go', shorty.redirect)                     // public — or '/', or a vhost; any order
 app.use('/admin/links/api', requireAdmin, shorty.routes)
 app.use('/admin/links', requireAdmin, shorty.ui())  // SPA; talks to `routes`
@@ -51,6 +53,8 @@ await shorty.stats({ linkId?, from, to, interval })
 await shorty.paramValues()        // the suggestion catalog, §7.4
 await shorty.inspect(url)         // OG + destination health, §7.6
 shorty.shortUrl(link)             // publicBaseUrl + slug
+await shorty.drain()              // in-flight click pipelines (shutdown, tests)
+shorty.health()                   // { clickFailures, hookFailures, misses, inFlight, clicksEnabled }
 ```
 
 Exports: `createShorty` (default too), `createShortyClient` from
@@ -103,11 +107,8 @@ interface ShortyConfig {
     ip?: (req) => string | undefined     // default req.ip — host owns trust proxy
   }
 
-  resolveUser?: (req) => { id: string; name?: string } | null   // stamps createdBy/updatedBy
-  screenshot?: (url: string) => Promise<{ contentType: string; body: Buffer } | null>
-                                         // optional adapter, §4; UI hides the tab when absent
-
-  // hooks — mailery's top-level onX style; all optional, all awaited-and-caught, none can break a redirect
+  // hooks — mailery's top-level onX style; all optional, all awaited-and-caught, none can break a redirect.
+  // Exact event shapes: types/index.d.ts (the contract wins over this sketch).
   onClick?:   (e: ClickEvent) => void | Promise<void>   // after the response is sent; bots included, flagged
   onCreate?:  (e: { link: Link; req? }) => void | Promise<void>
   onUpdate?:  (e: { link: Link; prev: Link; revision?: Revision; req? }) => ...
@@ -139,25 +140,15 @@ interface ShortyConfig {
 | hashed visitor, no raw IP | Shlink anonymize default, Kutt stores none |
 | `onClick` / `onCreate` / `onUpdate` / `onDelete` | Dub `link.clicked|created|updated|deleted` webhooks — as hooks, so the host decides transport |
 | `onMiss` | Shlink orphan visits |
-| `screenshot` | **no product has it** — adapter only, see §4 |
 
 ## 4. Adapters — both directions
 
 | Adapter | Inbound (shorty → host) | Outbound (host → shorty) | Default when absent |
 |---|---|---|---|
-| `resolveUser` | asks who is acting | `{ id, name }` or null | `createdBy` unset |
 | `geo` | hands `req` | country/region/city | CDN-header reader; nothing if no header |
 | `ip` | hands `req` | client IP string | `req.ip` |
-| `screenshot` | a destination URL | image bytes or null | preview tab hidden |
 | `track` | event name + attrs/subjects | nothing | no-op |
 | `onX` hooks | the event object | nothing; throws are logged, never propagate | no-op |
-
-`screenshot` is an adapter, not a feature, on purpose: rendering a page needs a
-headless browser (≈150 MB dependency) or a paid API. A host that already runs
-Playwright (complykit does) passes a 5-line function. An iframe preview was
-considered and rejected: most real destinations send `X-Frame-Options` /
-`frame-ancestors`, so it would show a blank box on exactly the sites people link
-to most.
 
 ## 5. Package split
 
@@ -202,7 +193,7 @@ package (featureboard precedent).
   rev: number,                   // increments on destination change
   clicks: number, uniqueClicks: number, lastClickedAt?,       // humans
   botClicks: number,                                          // bots, kept apart — views add them or not
-  archived: boolean, createdBy?, updatedBy?, createdAt, updatedAt
+  archived: boolean, createdAt, updatedAt
 }
 ```
 Indexes: `{ keys: 1 }`; `{ archived: 1, createdAt: -1 }`;
@@ -215,10 +206,13 @@ Indexes: `{ keys: 1 }`; `{ archived: 1, createdAt: -1 }`;
 link's alias under a race): `{ _id: slugKey, linkId, current: boolean, at }`.
 Claiming a slug is an insert; duplicate-key = taken. Deleting a link frees its keys.
 
-**`shorty_link_revisions`** — one doc per destination change (Bitly's history):
-`{ linkId, rev, baseUrl, utm, params, hash, destination, by?, at }`.
-Index `{ linkId: 1, rev: -1 }` unique. Clicks carry `rev`, so "clicks per
-destination period" is a group-by, not a reconstruction.
+**`shorty_history`** — one doc per created / destination change / slug rename
+(Bitly's history): `HistoryEntry` + `linkId`. Index `{ linkId: 1, at: 1 }`.
+Clicks carry `rev`, so "clicks per destination period" is a group-by, not a
+reconstruction.
+
+**`shorty_meta`** — singleton `{ _id: 'config', caseSensitive }`, so `ready()`
+knows which case mode the stored keys were written under and can re-key.
 
 **`shorty_clicks`** — raw, TTL'd (traps #17: regular collection, not time-series):
 `{ linkId, rev, at, visitor: string /* HMAC */, unique: boolean, bot: boolean,
@@ -265,7 +259,7 @@ the point):
 
 ```
 $project { pairs: concat(utm entries as utm_*, params) }
-$unwind pairs → $group by (key, value): count, lastUsedAt
+$unwind pairs → $group by (key, value): DISTINCT links (a link repeating a key counts once), lastUsedAt
 $sort count desc → $group by key: values (first 50), totalCount
 ```
 `maxTimeMS: 2000`, values capped per key (traps #18). Response:
@@ -282,7 +276,9 @@ rots.
 ```
 GET|HEAD <mount>/<path>
  1. path → candidate slug. Not slug grammar (has '.', empty, too long) → next(), no DB hit
-    (so a root mount never touches /assets/app.js, /favicon.ico, /api/*)
+    (so a root mount never touches /assets/app.js, /favicon.ico). Paths that ARE valid
+    slug grammar (`/api/users`) do get one lookup + a miss row; a root-mounted host
+    that wants none adds `slug.reserved: [/^api(\/|$)/]`.
  2. reserved → next()
  3. findOne({ slugKey }) projecting only redirect fields. Miss → onMiss behavior + misses row
  4. expired (date or clicks ≥ maxClicks) → expiredUrl | onExpired
@@ -311,7 +307,7 @@ Returns:
 ```ts
 { og: { title, description, image, siteName, favicon },   // og → twitter → <title> fallback chain
   final: { url, status, ms }, chain: [{ url, status }],
-  warnings: Warning[], screenshot?: string /* data URL, only with adapter */ }
+  warnings: Warning[] }
 ```
 Warnings — the bit that makes the form better than Bitly's:
 - `query_dropped`: destination redirects and the final URL lost the UTMs
@@ -319,7 +315,7 @@ Warnings — the bit that makes the form better than Bitly's:
 - `not_ok`: final status ≥ 400; `redirects`: chain length > 1 (suggest final URL)
 - `noindex_destination`, `cloudflare_challenge` (OG unavailable, not broken)
 - `utm_incomplete`: some UTMs set but not source+medium+campaign
-- `near_duplicate_value` (from §7.4)
+- (near-duplicate values are UI lint from the §7.4 catalog, not an inspect warning)
 
 ## 8. UI shape
 
@@ -373,7 +369,7 @@ create form opens prefilled (Dub).
 - **Preview panel** (tabs): Social card as X / LinkedIn / Facebook / Slack /
   iMessage render it (from `inspect`, or `social` override when set);
   Destination health (final URL, status, chain, warnings with one-click fixes —
-  "use final URL"); Screenshot (only with adapter); QR (download PNG/SVG).
+  "use final URL"); QR (download PNG/SVG).
 - *Notes, tags* — visible.
 - **Advanced** (collapsed, remembers state): redirect status, forward query,
   expiry date / max clicks / expired URL, custom social card (title, description,
@@ -395,7 +391,7 @@ totals, top links, top campaigns (from utm), recent misses.
 | Trap | Answer |
 |---|---|
 | #2 model registry | `modelPrefix`; models compiled on the given connection |
-| #4 route order | admin literals (`/links/stats`, `/slugs/check`, `/params`, `/tags`, `/inspect`) declared before `/:id`; tests named after the shadowing |
+| #4 route order | admin literals (`/stats`, `/slugs/check`, `/slugs/generate`, `/params`, `/tags`, `/inspect`) declared before `/:id`; tests named after the shadowing |
 | #5 body parser | host's `express.json()`; documented |
 | #6 async → HTML | every handler wrapped; redirect router never throws past `next(err)` only for genuine DB outage |
 | #8 SPA mount | `<base href>` + escaped config blob; 503 when bundle missing |
@@ -458,6 +454,9 @@ totals, top links, top campaigns (from utm), recent misses.
 No open questions remain in the plan.
 
 ## 14. Work breakdown (Stage 4 preview)
+
+Superseded in detail by [work-breakdown.md](./work-breakdown.md) (PR 0). The
+typed client moved into PR 0.
 
 | PR | Who | Contents | Done when |
 |---|---|---|---|

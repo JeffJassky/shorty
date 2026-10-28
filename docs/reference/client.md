@@ -1,57 +1,43 @@
 # Client
 
-```js
-import { createClient, createAdminClient } from '@jeffjassky/shorty/client';
+```ts
+import { createShortyClient } from '@jeffjassky/shorty/client';
+
+const client = createShortyClient({ baseUrl: '/admin/links/api' });
+const { items } = await client.links({ sort: 'clicks', limit: 20 });
 ```
 
-A transport-agnostic JSON client for the HTTP API. The shipped SPA uses it; so
-can your own UI.
+A typed `fetch` client for [`shorty.routes`](./http). The admin UI is built on
+it, and you can use it from your own front end or from a script.
 
-## When to reach for this
+## Options
 
-If the feature has to live **inside** one of your existing pages rather than own
-a route, use the API plus this client and build that view yourself. Don't try to
-run both the mounted SPA and an embedded copy — pick one.
-
-## `createClient(options)`
-
-| Option | Default | |
+| Option | Default | Notes |
 |---|---|---|
-| `baseUrl` | `/api/shorty` | |
-| `request` | `fetch`, `same-origin` credentials | Swap in axios, or a test double |
-| `onUnauthenticated` | `null` | Fires on **401 and 403** |
+| `baseUrl` | `'/api/shorty'` | Where `routes` is mounted. |
+| `request` | built-in `fetch` | `(method, url, body?) => Promise<any>`. Swap in axios or a test double. |
+| `onUnauthenticated` | none | Called on 401 and 403, since both strand an already-rendered page. |
 
-```js
-const client = createClient({
-  baseUrl: '/api/shorty',
-  onUnauthenticated: () => {
-    const back = encodeURIComponent(window.location.href);
-    window.location.href = `/login?next=${back}`;
-  },
-});
-```
-
-403 is included on purpose: a revoked admin role strands an already-rendered
-page as completely as an expired session does.
+The default transport throws an `ApiError` (`status`, `payload`) on a non-2xx.
+`payload` is `{ error: code, ... }` from the server.
 
 ## Methods
 
-| | |
+| Method | Route |
 |---|---|
-| `me()` | `{ user: { email, displayName, isAdmin } }` — no internal ids |
-| `list(params)` | `{ items, limit }` |
-| `get(id)` | `{ item }` |
-| `call(method, path, body)` | Raw call against this client's base |
+| `links(query?)` | `GET /links` |
+| `createLink(input)` | `POST /links` |
+| `link(id)` | `GET /links/:id` |
+| `updateLink(id, patch)` | `PATCH /links/:id` |
+| `archiveLink(id)` / `unarchiveLink(id)` | `POST /links/:id/(un)archive` |
+| `deleteLink(id)` | `DELETE /links/:id` |
+| `history(id)` | `GET /links/:id/history` |
+| `stats({ linkId?, from, to, interval?, top? })` | `GET /links/:id/stats` or `GET /stats` |
+| `paramValues()` | `GET /params` |
+| `tags()` | `GET /tags` |
+| `checkSlug(slug, { linkId? })` | `GET /slugs/check` |
+| `generateSlug()` | `GET /slugs/generate` |
+| `inspect(url)` | `POST /inspect` |
+| `call(method, url, body?)` | the raw transport |
 
-## `createAdminClient(options)`
-
-Same surface against `/api/shorty/admin`, plus `summary()`.
-
-## `limit` is a fact, not an echo
-
-`list()` returns the cap the **server** applied, which may be lower than what
-you asked for. Read it; don't assume your request was honored.
-
-## Errors
-
-A non-2xx throws an `Error` carrying `status` and the parsed `payload`.
+Return types use `Json<T>`: the server's types with `Date` as ISO `string`.

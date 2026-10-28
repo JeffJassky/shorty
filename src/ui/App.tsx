@@ -1,24 +1,21 @@
 import React from 'react';
-import { createClient, createAdminClient } from '../client/index';
-import type { ListResponse, ShortyClient } from '../../types/client';
+import { createShortyClient } from '../client/index';
+import type { ShortyClient } from '../../types/client';
 import type { UiRuntimeConfig } from '../../types/index';
+import { Icons } from './components/icons';
+import { ToastProvider } from './components/toast';
+import { AppContext, type AppContextValue } from './lib/context';
+import { hrefs, navigate, useRoute } from './lib/router';
+import { LinkFormScreen } from './screens/link-form';
+import { AnalyticsScreen } from './screens/analytics';
+import { LinkDetailScreen } from './screens/link-detail';
+import { LinksScreen } from './screens/links';
 
 /**
- * Skeleton SPA. Replace the body; keep the shape.
- *
- * The two things worth preserving: the client is built from the injected
- * config (never a hardcoded base), and `onUnauthenticated` carries the full
- * current URL — hash route included — so a login flow that honors the return
- * param puts the user back on the exact view. See standards/adapters.md.
+ * Router + topbar. Keeps the two hand-offs the host relies on: the client is
+ * built from the injected config, and `onUnauthenticated` carries the full
+ * current URL (hash included) back through the login flow.
  */
-
-/** Discriminated union rather than optional fields — `state.error` cannot be
- * read while loading, and the compiler is the one enforcing it. */
-type ViewState =
-  | { status: 'loading' }
-  | { status: 'ready'; items: ListResponse['items'] }
-  | { status: 'error'; error: Error };
-
 export default function App({ config }: { config: UiRuntimeConfig }) {
   const client = React.useMemo<ShortyClient>(() => {
     const onUnauthenticated = config.loginUrl
@@ -27,35 +24,66 @@ export default function App({ config }: { config: UiRuntimeConfig }) {
         window.location.href = `${config.loginUrl}?${config.returnParam}=${back}`;
       }
       : null;
-    return config.admin
-      ? createAdminClient({ baseUrl: config.adminApiBase, onUnauthenticated })
-      : createClient({ baseUrl: config.apiBase, onUnauthenticated });
+    return createShortyClient({ baseUrl: config.apiBase, onUnauthenticated });
   }, [config]);
 
-  const [state, setState] = React.useState<ViewState>({ status: 'loading' });
+  const [linksVersion, setLinksVersion] = React.useState(0);
+  const bumpLinks = React.useCallback(() => setLinksVersion((n) => n + 1), []);
+  const ctx = React.useMemo<AppContextValue>(
+    () => ({ config, client, linksVersion, bumpLinks }),
+    [config, client, linksVersion, bumpLinks],
+  );
 
+  const route = useRoute();
+  React.useEffect(() => { document.title = config.title; }, [config.title]);
+
+  // N → New link, / → search. Never while typing.
   React.useEffect(() => {
-    let live = true;
-    client.list()
-      .then((data) => { if (live) setState({ status: 'ready', items: data.items }); })
-      .catch((err: Error) => { if (live) setState({ status: 'error', error: err }); });
-    return () => { live = false; };
-  }, [client]);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const t = e.target as HTMLElement | null;
+      if (t && t.closest('input,textarea,select,[contenteditable="true"],[role="dialog"]')) return;
+      // Focus can sit on <body> behind an open sheet or dialog; leave those alone.
+      if (document.querySelector('[role="dialog"]')) return;
+      if (e.key === 'n' || e.key === 'N') { e.preventDefault(); navigate(hrefs.new); }
+      else if (e.key === '/') { e.preventDefault(); document.getElementById('links-search')?.focus(); }
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, []);
 
   return (
-    <main className="shorty">
-      <h1>{config.title}</h1>
-      {state.status === 'loading' && <p>Loading…</p>}
-      {state.status === 'error' && <p role="alert">Could not load: {state.error.message}</p>}
-      {state.status === 'ready' && (
-        <ul>
-          {state.items.map((item) => (
-            <li key={String((item as { _id: unknown })._id)}>
-              {String((item as { _id: unknown })._id)}
-            </li>
-          ))}
-        </ul>
-      )}
-    </main>
+    <AppContext.Provider value={ctx}>
+      <ToastProvider>
+        <div className="app">
+          <header className="topbar">
+            <a className="brand" href={hrefs.list} aria-label={config.title}>
+              <span className="brand-mark" aria-hidden="true">↗</span>
+              <span className="brand-name">{config.title}</span>
+            </a>
+            <nav className="topnav" aria-label="Main">
+              <a href={hrefs.list} className={'topnav-link' + (route.name !== 'analytics' ? ' active' : '')} aria-current={route.name !== 'analytics' ? 'page' : undefined}>Links</a>
+              {config.clicksEnabled && (
+                <a href={hrefs.analytics} className={'topnav-link' + (route.name === 'analytics' ? ' active' : '')} aria-current={route.name === 'analytics' ? 'page' : undefined}>Analytics</a>
+              )}
+            </nav>
+            <span className="topbar-spacer" />
+            <a className="btn btn-primary" href={hrefs.new}><Icons.Plus /> New link</a>
+          </header>
+          <main className="content">
+            <div className="content-inner">
+              {/* The list stays mounted (hidden) behind detail and analytics so filters and scroll survive the round trip. */}
+              <div hidden={route.name === 'detail' || route.name === 'analytics' || (route.name === 'edit' && route.from === 'detail')}>
+                <LinksScreen active={route.name === 'list'} />
+              </div>
+              {(route.name === 'detail' || (route.name === 'edit' && route.from === 'detail')) && <LinkDetailScreen key={route.id} id={route.id} />}
+              {route.name === 'analytics' && <AnalyticsScreen />}
+            </div>
+          </main>
+          {route.name === 'new' && <LinkFormScreen key="new" mode="new" />}
+          {route.name === 'edit' && <LinkFormScreen key={route.id} mode="edit" id={route.id} from={route.from} />}
+        </div>
+      </ToastProvider>
+    </AppContext.Provider>
   );
 }

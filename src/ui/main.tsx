@@ -12,11 +12,13 @@ import type { UiRuntimeConfig } from '../../types/index';
 // of sync and `tsc` says so instead of the browser.
 const config: UiRuntimeConfig = window.__SHORTY__ ?? {
   apiBase: '/api/shorty',
-  adminApiBase: '/api/shorty/admin',
-  admin: false,
-  title: 'Shorty',
+  title: 'Links',
+  publicBaseUrl: 'http://localhost:3000/go',
   loginUrl: null,
   returnParam: 'next',
+  slug: { length: 7, caseSensitive: false, rename: 'alias' },
+  redirect: { status: 302, forwardQuery: true },
+  clicksEnabled: true,
 };
 
 const root = document.getElementById('shorty-root');

@@ -1,64 +1,76 @@
+import type { Router } from 'express';
+import type { CreateShortyConfig, Link, ShortyInstance, UiOptions } from '../../types/index.js';
 import { resolveConfig } from './config.js';
-import { createRoutes, createAdminRoutes } from './routes/index.js';
-import { createPublicUiRouter, createAdminUiRouter, defaultSpaDir } from './ui.js';
-import type {
-  PurgeSummary,
-  UiOptions,
-  CreateShortyConfig,
-  ShortyInstance,
-} from '../../types/index.js';
-import type { PackageUser } from '../../types/index.js';
+import { createClickService } from './clicks.js';
+import { createCounters, snapshotHealth } from './counters.js';
+import { createHooks } from './hooks.js';
+import { createInspect } from './inspect/index.js';
+import { createParamValues } from './params.js';
+import { createLifecycle } from './lifecycle.js';
+import { createLinkService } from './links.js';
+import { createRedirect } from './redirect.js';
+import { createRoutes } from './routes.js';
+import { createSlugService } from './slug.js';
+import { createStats } from './stats.js';
+import { createUiRouter, defaultSpaDir } from './ui.js';
 
-export { defaultResolveUser, createUserAdapter } from './config.js';
-export { createLinkModel, buildLinkSchema } from './model-factory.js';
-export { HttpError } from './errors.js';
+export { ShortyError, ERROR_STATUS } from './errors.js';
+export { composeUrl, parseUrl } from '../shared/url.js';
 export { defaultSpaDir };
 
 /**
- * Shorty — the package factory.
+ * Shorty — returns routers the host mounts and a programmatic API. Never an
+ * app, never a server.
  *
- * Returns routers the host mounts. Never an app, never a server.
+ *   const shorty = createShorty({ connection: mongoose, publicBaseUrl: 'https://acme.com/go' });
+ *   await shorty.ready();
  *
- *   const pkg = createShorty({ connection: mongoose, resolveUser });
- *
- *   app.use(express.json());                        // the host's job, not ours
- *   app.use('/api/shorty', requireAuth, pkg.routes);
- *   app.use('/shorty',    requireAuth, pkg.ui({ mountPath: '/shorty' }));
- *
- *   app.use('/api/shorty/admin', requireAuth, requireAdmin, pkg.adminRoutes);
- *   app.use('/admin/shorty',    requireAuth, requireAdmin,
- *           pkg.adminUi({ mountPath: '/admin/shorty' }));
- *
- * The return type is the hand-written `ShortyInstance` from `types/`, not an
- * inferred shape. That is deliberate: annotating it here makes `tsc` fail when
- * the source grows a method the published declarations don't mention, which is
- * the exact drift `types/test-d.ts` exists to catch. See standards/traps.md #9.
+ *   app.use(express.json());                                 // the host's job
+ *   app.use('/go', shorty.redirect);                         // public; any path, any order
+ *   app.use('/api/shorty', requireAdmin, shorty.routes);
+ *   app.use('/shorty', requireAdmin, shorty.ui());
  */
-export function createShorty(config: CreateShortyConfig = {}): ShortyInstance {
+export function createShorty(config: CreateShortyConfig): ShortyInstance {
   const ctx = resolveConfig(config);
+  const counters = createCounters();           // incremented by hooks and the redirect/click pipelines
+  const slugs = createSlugService(ctx);
+  const hooks = createHooks(ctx, counters);
+  const service = createLinkService(ctx, slugs, hooks);
+  const redirect = createRedirect(ctx, slugs, createClickService(ctx, hooks, counters), counters);
+  const lifecycle = createLifecycle(ctx);
 
-  return {
-    /** The Mongoose model. Exposed so hosts can `await model.createIndexes()`. */
-    model: ctx.Model,
-    /** Public JSON API. */
-    routes: createRoutes(ctx),
-    /** Admin JSON API. The host guards it — this router does not. */
-    adminRoutes: createAdminRoutes(ctx),
-    /** Public SPA router. */
-    ui: (opts?: UiOptions) => createPublicUiRouter(opts),
-    /** Admin SPA router. */
-    adminUi: (opts?: UiOptions) => createAdminUiRouter(opts),
+  const instance: ShortyInstance = {
+    redirect: redirect.router,
+    routes: undefined as unknown as Router,   // set below — the router calls back into this instance
+    ui: (opts?: UiOptions) => createUiRouter(ctx, { ...ctx.ui, ...opts }),
 
-    /**
-     * Outbound adapter direction: the host tells us a user is gone.
-     *
-     * We store references into a user system we do not own, and nothing else
-     * will ever clean them up. Repair every derived value this touches, and
-     * make it idempotent — it will be called twice.
-     */
-    async purgeUser(userId: PackageUser['id']): Promise<PurgeSummary> {
-      const { deletedCount = 0 } = await ctx.Model.deleteMany({ userId });
-      return { removed: deletedCount };
-    },
+    ready: lifecycle.ready,
+    drain: redirect.drain,
+    health: () => snapshotHealth(counters, ctx.clicks.enabled),
+
+    createLink: service.createLink,
+    updateLink: service.updateLink,
+    archiveLink: service.archiveLink,
+    unarchiveLink: service.unarchiveLink,
+    deleteLink: service.deleteLink,
+
+    link: service.link,
+    links: service.links,
+    history: service.history,
+    stats: createStats(ctx),
+    paramValues: createParamValues(ctx),
+    tags: service.tags,
+    checkSlug: service.checkSlug,
+    generateSlug: service.generateSlug,
+    inspect: createInspect(ctx),
+    shortUrl: (linkOrSlug: Link | string) =>
+      `${ctx.publicBaseUrl}/${typeof linkOrSlug === 'string' ? linkOrSlug : linkOrSlug.slug}`,
+    recount: service.recount,
+
+    models: ctx.models,
   };
+  instance.routes = createRoutes(ctx, instance);
+  return instance;
 }
+
+export default createShorty;

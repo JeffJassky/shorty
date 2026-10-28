@@ -37,4 +37,15 @@ jobs:
       # Trusted publishing requires npm >= 11.5.1. Node 22's bundled npm may
       # lag, and `npm install -g npm@latest` has a known self-upgrade race on
       # hosted runners — use npx so we don't mutate the global install.
-      - run: npx -y npm@latest publish --provenance --access public
+      # The first release of a package is published by hand (trusted publishing
+      # can only be configured once the package exists — standards/publishing.md),
+      # so the tag for that version must not go red trying to publish it again.
+      - name: Skip if this version is already on npm
+        id: published
+        run: |
+          if npm view "$(node -p "require('./package.json').name")@$(node -p "require('./package.json').version")" version >/dev/null 2>&1; then
+            echo "already=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::$(node -p "require('./package.json').version") is already published — skipping."
+          fi
+      - if: steps.published.outputs.already != 'true'
+        run: npx -y npm@latest publish --provenance --access public
