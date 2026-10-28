@@ -1,6 +1,6 @@
 {
   "name": "@jeffjassky/shorty",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Self-hosted short links for Express + MongoDB: UTM builder, click analytics, React admin UI",
   "license": "MIT",
   "author": "Jeff Jassky <jeff@jeffjassky.com>",
