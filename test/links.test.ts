@@ -1,12 +1,10 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import request from 'supertest';
 import { Types } from 'mongoose';
-import type { Request } from 'express';
 import {
-  composeUrl, createShorty, defaultResolveUser, ERROR_STATUS, ShortyError,
+  composeUrl, createShorty, ERROR_STATUS, ShortyError,
 } from '../src/server/index.js';
 import type {
-  Actor,
   CreateShortyConfig,
   Link,
   LinkInput,
@@ -25,8 +23,6 @@ import type { Harness } from './helpers.js';
 beforeAll(startDb);
 afterAll(stopDb);
 
-const ANN: Actor = { id: 'u_1', name: 'Ann Admin' };
-const BOB: Actor = { id: 'u_2', name: 'Bob' };
 const GENERATED = /^[23456789abcdefghjkmnpqrstuvwxyz]{7}$/;
 
 async function rejects(p: Promise<unknown>, code: ShortyErrorCode): Promise<ShortyError> {
@@ -124,13 +120,6 @@ describe('createLink — destination', () => {
   it('does not let a link point back at this shorty', async () => {
     const h = await harness();
     await rejects(h.shorty.createLink({ url: 'http://short.test/go/other' }), 'destination_loop');
-  });
-
-  it('does not lose who created the link', async () => {
-    const h = await harness();
-    expect((await create(h, {})).createdBy).toBeUndefined();
-    const link = await h.shorty.createLink({ url: 'https://acme.com/' }, { actor: BOB });
-    expect(link.createdBy).toEqual(BOB);
   });
 });
 
@@ -409,13 +398,6 @@ describe('updateLink — destination', () => {
     expect(b.rev).toBe(3);
   });
 
-  it('does not lose who updated the link', async () => {
-    const h = await harness();
-    const link = await create(h);
-    const next = await h.shorty.updateLink(link.id, { title: 'x' }, { actor: BOB });
-    expect(next.updatedBy).toEqual(BOB);
-  });
-
   it('does not answer an unknown id with anything but not_found', async () => {
     const h = await harness();
     await rejects(h.shorty.updateLink(new Types.ObjectId().toHexString(), { title: 'x' }), 'not_found');
@@ -425,22 +407,22 @@ describe('updateLink — destination', () => {
 describe('history', () => {
   it('does not omit or reorder created, destination and slug entries', async () => {
     const h = await harness();
-    const link = await h.shorty.createLink({ url: 'https://acme.com/?utm_source=ig', slug: 'spring' }, { actor: ANN });
+    const link = await h.shorty.createLink({ url: 'https://acme.com/?utm_source=ig', slug: 'spring' });
     h.clock.advance(MINUTE);
-    await h.shorty.updateLink(link.id, { utm: { source: 'fb' } }, { actor: BOB });
+    await h.shorty.updateLink(link.id, { utm: { source: 'fb' } });
     h.clock.advance(MINUTE);
-    await h.shorty.updateLink(link.id, { slug: 'summer' }, { actor: ANN });
+    await h.shorty.updateLink(link.id, { slug: 'summer' });
 
     const entries = await h.shorty.history(link.id);
     expect(entries.map((e) => e.kind)).toEqual(['created', 'destination', 'slug']);
     expect(entries[0]).toMatchObject({
-      kind: 'created', rev: 1, slug: 'spring', destination: 'https://acme.com/?utm_source=ig', by: ANN,
+      kind: 'created', rev: 1, slug: 'spring', destination: 'https://acme.com/?utm_source=ig',
     });
     expect(entries[1]).toMatchObject({
       kind: 'destination', rev: 2,
-      destination: 'https://acme.com/?utm_source=fb', previous: 'https://acme.com/?utm_source=ig', by: BOB,
+      destination: 'https://acme.com/?utm_source=fb', previous: 'https://acme.com/?utm_source=ig',
     });
-    expect(entries[2]).toMatchObject({ kind: 'slug', from: 'spring', to: 'summer', mode: 'alias', by: ANN });
+    expect(entries[2]).toMatchObject({ kind: 'slug', from: 'spring', to: 'summer', mode: 'alias' });
     expect(entries[1].at.getTime() - entries[0].at.getTime()).toBe(MINUTE);
   });
 });
@@ -844,17 +826,15 @@ describe('lifecycle hooks and track', () => {
     const onDelete = vi.fn<NonNullable<Cfg['onDelete']>>();
     const h = await harness({ config: { onCreate, onUpdate, onArchive, onDelete } });
 
-    const link = await h.shorty.createLink({ url: 'https://acme.com/?utm_campaign=a', slug: 'spring' }, { actor: ANN });
+    const link = await h.shorty.createLink({ url: 'https://acme.com/?utm_campaign=a', slug: 'spring' });
     expect(onCreate).toHaveBeenCalledTimes(1);
     expect(onCreate.mock.calls[0][0].link.id).toBe(link.id);
-    expect(onCreate.mock.calls[0][0].actor).toEqual(ANN);
 
-    await h.shorty.updateLink(link.id, { utm: { campaign: 'b' } }, { actor: BOB });
+    await h.shorty.updateLink(link.id, { utm: { campaign: 'b' } });
     expect(onUpdate).toHaveBeenCalledTimes(1);
     const upd = onUpdate.mock.calls[0][0];
     expect(upd.prev.utm.campaign).toBe('a');
     expect(upd.link.utm.campaign).toBe('b');
-    expect(upd.actor).toEqual(BOB);
     expect(upd.history).toHaveLength(1);
     expect(upd.history[0]).toMatchObject({ kind: 'destination', rev: 2, previous: 'https://acme.com/?utm_campaign=a' });
 
@@ -1309,30 +1289,6 @@ describe('shortUrl()', () => {
     expect(h.shorty.shortUrl(link)).toBe('http://short.test/go/spring/ig');
     expect(h.shorty.shortUrl(link)).toBe(link.shortUrl);
     expect(h.shorty.shortUrl('spring/ig')).toBe(link.shortUrl);
-  });
-});
-
-describe('defaultResolveUser', () => {
-  const req = (fields: Record<string, unknown>) => fields as unknown as Request;
-
-  it('does not miss the conventional id locations', () => {
-    expect(defaultResolveUser(req({ authUserId: 'a1' }))).toEqual({ id: 'a1' });
-    const oid = new Types.ObjectId();
-    expect(defaultResolveUser(req({ user: { _id: oid } }))).toEqual({ id: oid.toHexString() });
-    expect(defaultResolveUser(req({ user: { id: 42 } }))).toEqual({ id: '42' });
-  });
-
-  it('does not miss a display name from name, displayName or email', () => {
-    expect(defaultResolveUser(req({ user: { id: 'u', name: 'Ann' } }))).toEqual({ id: 'u', name: 'Ann' });
-    expect(defaultResolveUser(req({ user: { id: 'u', displayName: 'Ann D' } }))).toEqual({ id: 'u', name: 'Ann D' });
-    expect(defaultResolveUser(req({ user: { id: 'u', email: 'ann@acme.com' } }))).toEqual({ id: 'u', name: 'ann@acme.com' });
-  });
-
-  it('does not invent an actor when there is no id', () => {
-    expect(defaultResolveUser(req({}))).toBeNull();
-    expect(defaultResolveUser(req({ user: {} }))).toBeNull();
-    expect(defaultResolveUser(req({ user: { name: 'No Id' } }))).toBeNull();
-    expect(defaultResolveUser(req({ authUserId: '' }))).toBeNull();
   });
 });
 

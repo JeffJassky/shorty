@@ -1,15 +1,5 @@
 # Link previews & SSRF
 
-::: danger If you pass a `screenshot` adapter, egress is YOUR responsibility
-shorty's safe fetch protects only its own requests. The adapter is called as
-`screenshot(url, { addresses })` with a URL that is **not validated for the
-adapter's own fetch**. The adapter MUST enforce its own egress policy: pin the
-browser's resolver to `addresses`, intercept requests and refuse non-public
-addresses, or run it in a sandboxed network. Otherwise DNS rebinding, script
-redirects and subresources can reach `127.0.0.1` or `169.254.169.254`, and the
-screenshot hands the pixels back. Details [below](#screenshot-adapter).
-:::
-
 `shorty.inspect(url)` (and `POST /inspect`, used by the form) fetches a
 destination and returns:
 
@@ -19,8 +9,7 @@ destination and returns:
 - `warnings`: `query_dropped` (a redirect lost your UTMs, so analytics see
   direct traffic), `not_ok`, `redirects` (with a "use the final URL" fix),
   `noindex_destination`, `cloudflare_challenge`, `utm_incomplete`,
-  `private_address`, `unreachable`;
-- `screenshot`: a `data:` URL, only with a screenshot adapter.
+  `private_address`, `unreachable`.
 
 It never throws for network reasons (those become warnings). It throws only
 for input that is not a URL (`invalid_url`, `unsupported_scheme`).
@@ -64,36 +53,6 @@ public-but-special endpoints (for example Azure's `168.63.129.16`), should pass
 an `isAllowedAddress` that also refuses those addresses.
 :::
 
-## Screenshot adapter
-
-```js
-createShorty({
-  screenshot: async (url, { addresses }) => {
-    const body = await myBrowser.screenshot(url, { resolveTo: addresses });
-    return body ? { contentType: 'image/png', body } : null;
-  },
-});
-```
-
-| Direction | What |
-|---|---|
-| shorty to host | the final URL and `{ addresses }`, the IPs the safe fetch checked and connected to for the final hop |
-| host to shorty | `{ contentType, body: Buffer }`, or `null` for no screenshot |
-
-A throw or `null` means no screenshot and never fails the inspect. The adapter
-is called only when the safe fetch actually reached the final URL, and the
-whole inspect (adapter included) shares `timeoutMs`.
-
-::: danger Egress is the adapter's responsibility
-shorty guarantees one thing: the adapter is called only for a URL its safe
-fetch reached. The URL is **not validated for the adapter's own fetch.** A
-browser re-resolves DNS (the name may now point at `127.0.0.1` or
-`169.254.169.254`), follows script and meta redirects, and loads subresources
-from any host, and a screenshot of an internal page hands its pixels back.
-Pin the browser's resolver to `addresses`, intercept and refuse non-public
-requests, or run it in a sandboxed network.
-:::
-
-Why an adapter and not a built-in: rendering needs a headless browser or a
-paid API. An iframe preview was rejected, since most real destinations send
-`X-Frame-Options` or `frame-ancestors` and would show a blank box.
+Previews are Open Graph only: there is no screenshot adapter. An iframe preview
+was rejected, since most real destinations send `X-Frame-Options` or
+`frame-ancestors` and would show a blank box.

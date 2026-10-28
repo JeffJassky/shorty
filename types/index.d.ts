@@ -36,15 +36,6 @@ export type RedirectStatus = 301 | 302 | 307 | 308;
  */
 export type RenameMode = 'alias' | 'untilClicked' | 'always' | 'never';
 
-/** Who is acting. Never an auth result — the host authenticated already. */
-export interface Actor {
-  id: string;
-  name?: string;
-}
-
-/** Inbound user adapter. Return null for a caller the host knows nothing about. */
-export type ResolveUser = (req: Request) => Actor | null | undefined;
-
 // ─────────────────────────────────────────────────────────────────────────────
 // URL parts — the destination as structured fields (§7.1, §7.4)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -203,8 +194,6 @@ export interface Link extends UrlParts {
   botClicks: number;
   lastClickedAt?: Date;
   archived: boolean;
-  createdBy?: Actor;
-  updatedBy?: Actor;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -272,9 +261,8 @@ export interface LinkPatch {
   og?: OgData | null;
 }
 
-/** Programmatic calls carry no request; pass the actor explicitly if there is one. */
+/** Programmatic calls carry no request; hooks receive `req` only when there is one. */
 export interface CallContext {
-  actor?: Actor;
   req?: Request;
 }
 
@@ -299,16 +287,15 @@ export interface LinksPage {
 }
 
 export type HistoryEntry =
-  | { kind: 'created'; at: Date; by?: Actor; rev: 1; destination: string; slug: string }
+  | { kind: 'created'; at: Date; rev: 1; destination: string; slug: string }
   | {
     kind: 'destination';
     at: Date;
-    by?: Actor;
     rev: number;
     destination: string;
     previous: string;
   }
-  | { kind: 'slug'; at: Date; by?: Actor; from: string; to: string; mode: RenameMode };
+  | { kind: 'slug'; at: Date; from: string; to: string; mode: RenameMode };
 
 export interface DeleteSummary {
   clicks: number;
@@ -528,8 +515,6 @@ export interface InspectResult {
   /** Every hop including the last. */
   chain: Array<{ url: string; status: number }>;
   warnings: InspectWarning[];
-  /** `data:` URL, only when a `screenshot` adapter is configured and returned one. */
-  screenshot?: string;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -651,7 +636,7 @@ export interface ClickConfig {
 }
 
 export interface InspectConfig {
-  /** Whole-inspect budget, covering DNS, every hop, and the screenshot adapter. Default 5000. */
+  /** Whole-inspect budget, covering DNS and every hop. Default 5000. */
   timeoutMs?: number;
   /** Body bytes read. Default 2_000_000; reading also stops at `</head>`. */
   maxBytes?: number;
@@ -685,28 +670,6 @@ export interface InspectConfig {
   /** Default `'shorty-inspect (+link preview)'`. */
   userAgent?: string;
 }
-
-/**
- * Called once per inspect with the FINAL url, only when the safe fetch reached
- * it — never for a refused (`private_address`) or `unreachable` destination.
- * That is the ONLY guarantee shorty makes here.
- *
- * The url is UNVALIDATED for the adapter's own fetch. A browser re-resolves
- * DNS (the name can now point at 127.0.0.1 or 169.254.169.254 — rebinding),
- * follows script and meta redirects, and loads subresources from any host; a
- * screenshot of an internal page hands its pixels back. The adapter MUST
- * enforce its own egress policy: a resolver pinned to `ctx.addresses`, request
- * interception that refuses non-public addresses, or a sandboxed network.
- *
- * `ctx.addresses` — the IPs the safe fetch checked and connected to for the
- * final hop, for pinning the browser's resolver to them.
- *
- * A throw or a null → no screenshot; never fails the inspect.
- */
-export type ScreenshotAdapter = (
-  url: string,
-  ctx: { addresses: string[] },
-) => Promise<{ contentType: string; body: Buffer } | null>;
 
 /** Structurally a `@jeffjassky/telemetry` client's `track`. No-op by default. */
 export type TrackFn = (
@@ -756,8 +719,6 @@ export interface CreateShortyConfig {
   /** `false` disables recording entirely. Default on (when a pepper exists). */
   clicks?: false | ClickConfig;
   inspect?: InspectConfig;
-  resolveUser?: ResolveUser;
-  screenshot?: ScreenshotAdapter;
 
   // Hooks — awaited, caught, logged, counted in `health().hookFailures`. None can
   // fail a write or a redirect. Lifecycle hooks complete BEFORE the write's
@@ -768,10 +729,10 @@ export interface CreateShortyConfig {
    * (`clicks: false` / no pepper) or the hit was expired: no click exists.
    */
   onClick?: (e: ClickEvent) => void | Promise<void>;
-  onCreate?: (e: { link: Link; actor?: Actor; req?: Request }) => void | Promise<void>;
-  onUpdate?: (e: { link: Link; prev: Link; history: HistoryEntry[]; actor?: Actor; req?: Request }) => void | Promise<void>;
-  onArchive?: (e: { link: Link; archived: boolean; actor?: Actor; req?: Request }) => void | Promise<void>;
-  onDelete?: (e: { link: Link; summary: DeleteSummary; actor?: Actor; req?: Request }) => void | Promise<void>;
+  onCreate?: (e: { link: Link; req?: Request }) => void | Promise<void>;
+  onUpdate?: (e: { link: Link; prev: Link; history: HistoryEntry[]; req?: Request }) => void | Promise<void>;
+  onArchive?: (e: { link: Link; archived: boolean; req?: Request }) => void | Promise<void>;
+  onDelete?: (e: { link: Link; summary: DeleteSummary; req?: Request }) => void | Promise<void>;
   /**
    * An unknown slug was requested (Shlink's orphan visit). Fires for every
    * onMiss mode; `path` is relative to the mount (`req.path`). Paths that can't
@@ -1017,11 +978,6 @@ export interface ShortyInstance {
 export declare function createShorty(config: CreateShortyConfig): ShortyInstance;
 export default createShorty;
 
-/**
- * id: `req.authUserId ?? req.user._id ?? req.user.id` (stringified; empty →
- * null). name: `req.user.name ?? displayName ?? email`.
- */
-export declare function defaultResolveUser(req: Request): Actor | null;
 export declare function defaultSpaDir(): string;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1083,8 +1039,6 @@ export interface UiRuntimeConfig {
   slug: { length: number; caseSensitive: boolean; rename: RenameMode };
   redirect: { status: RedirectStatus; forwardQuery: boolean };
   clicksEnabled: boolean;
-  /** A screenshot adapter is configured — the Preview tab shows. */
-  screenshot: boolean;
 }
 
 declare global {

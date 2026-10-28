@@ -8,14 +8,12 @@ import type { Request } from 'express';
 import createShortyDefault, {
   composeUrl,
   createShorty,
-  defaultResolveUser,
   defaultSpaDir,
   ERROR_STATUS,
   parseUrl,
   ShortyError,
 } from './index.js';
 import type {
-  Actor,
   BotCounts,
   Breakdown,
   CallContext,
@@ -53,8 +51,6 @@ import type {
   RedirectConfig,
   RedirectStatus,
   RenameMode,
-  ResolveUser,
-  ScreenshotAdapter,
   SeenDoc,
   ShortyErrorCode,
   ShortyHealth,
@@ -105,23 +101,15 @@ const inspect: InspectConfig = {
   timeoutMs: 1000, maxBytes: 1024, maxRedirects: 2, lookup: async () => ['93.184.216.34'],
   isAllowedAddress: () => true, userAgent: 'x',
 };
-const screenshot: ScreenshotAdapter = async () => ({ contentType: 'image/png', body: Buffer.from('') });
-const pinnedScreenshot: ScreenshotAdapter = async (url, ctx) => {
-  const pinned: string[] = ctx.addresses;
-  return pinned.length > 0 ? { contentType: 'image/png', body: Buffer.from(url) } : null;
-};
-// @ts-expect-error the adapter context carries addresses as strings
-const badScreenshot: ScreenshotAdapter = async (_url, ctx: { addresses: number[] }) => null;
 const track: TrackFn = (name, opts) => void [name, opts?.attrs, opts?.subjects];
 const logger: Logger = { warn: () => {} };
-const resolveUser: ResolveUser = (req) => defaultResolveUser(req);
 const full: CreateShortyConfig = {
   ...minimal,
   collectionPrefix: 'links_', modelPrefix: 'Links', pepper: 'secret',
-  slug, redirect, destinations, clicks, inspect, screenshot, resolveUser, track, logger,
+  slug, redirect, destinations, clicks, inspect, track, logger,
   ui: { title: 'Go' }, listLimit: 50, now: () => new Date(),
   onClick: (e: ClickEvent) => void [e.link.id, e.click.bot, e.req.path],
-  onCreate: ({ link, actor, req }) => void [link, actor, req],
+  onCreate: ({ link, req }) => void [link, req],
   onUpdate: ({ link, prev, history }) => void [link.rev, prev.rev, history.length],
   onArchive: ({ archived }) => void archived,
   onDelete: async ({ summary }) => void summary.keys,
@@ -150,7 +138,7 @@ const back: string = composeUrl({ ...parts, params: [p] });
 
 // ── Programmatic API ──
 async function api(s: ShortyInstance, req: Request) {
-  const ctx: CallContext = { actor: { id: 'u1', name: 'Ann' } satisfies Actor, req };
+  const ctx: CallContext = { req };
   const input: LinkInput = {
     url: 'https://acme.com', slug: 'spring', title: 't', notes: 'n', tags: ['a'],
     redirect: { status: 301, forwardQuery: false } satisfies LinkRedirectOverrides,

@@ -19,7 +19,6 @@ const config: UiRuntimeConfig = window.__SHORTY__ ?? {
   slug: { length: 7, caseSensitive: false, rename: 'alias' },
   redirect: { status: 302, forwardQuery: true },
   clicksEnabled: true,
-  screenshot: false,
 };
 
 const root = document.getElementById('shorty-root');

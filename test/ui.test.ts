@@ -66,7 +66,6 @@ describe('SPA serving (§8, traps #8)', () => {
         config: {
           slug: { rename: 'never', caseSensitive: true, length: 9 },
           redirect: { status: 301, forwardQuery: false },
-          screenshot: async () => null,
           ui: { title: 'Go links' },
         },
       });
@@ -82,7 +81,6 @@ describe('SPA serving (§8, traps #8)', () => {
         slug: { length: 9, caseSensitive: true, rename: 'never' },
         redirect: { status: 301, forwardQuery: false },
         clicksEnabled: true,
-        screenshot: true,
       } satisfies UiRuntimeConfig);
       // The pepper is a secret; it must never reach a browser.
       expect(JSON.stringify(cfg)).not.toContain('test-pepper');
@@ -166,7 +164,6 @@ describe('SPA serving against a fixture bundle', () => {
       slug: { length: 7, caseSensitive: false, rename: 'alias' },
       redirect: { status: 302, forwardQuery: true },
       clicksEnabled: true,
-      screenshot: false,
     } satisfies UiRuntimeConfig);
   });
 

@@ -21,7 +21,7 @@ implementation imports from them, never the reverse.
 | `Stats`, `StatsQuery`, `StatsPoint`, `Breakdown` | Analytics. Humans and bots are always separate. |
 | `ParamKeyStat`, `TagStat` | Suggestion catalog and tags. |
 | `InspectResult`, `InspectWarning` | Destination preview. |
-| `ScreenshotAdapter`, `TrackFn`, `ResolveUser` | Adapter signatures. |
+| `TrackFn` | Adapter signature. |
 | `ShortyError`, `ShortyErrorCode`, `ERROR_STATUS` | Errors. |
 | `UiOptions`, `UiRuntimeConfig` | UI mount options, and the config blob handed to the browser. |
 | `LinkDoc`, `ClickDoc`, `DailyDoc`, ... | Storage documents, for hosts that query the collections directly. |

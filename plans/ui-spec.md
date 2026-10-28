@@ -146,8 +146,7 @@ comboboxes for params exclude `utm_*` keys.
 - Hovering/focusing a segment highlights its field and vice versa.
 - A copy button for the final URL.
 
-**Preview** (tabs: **Social** · **Destination** · **Screenshot** (only when
-`config.screenshot`) · **QR**), driven by `client.inspect(baseUrl+query)`
+**Preview** (tabs: **Social** · **Destination** · **QR**), driven by `client.inspect(baseUrl+query)`
 debounced 600ms after the destination settles; stale results fade.
 - Social: card mockups for **X**, **LinkedIn**, **Facebook**, **Slack**,
   **iMessage** — each a faithful-enough frame (image ratio, title lines,
@@ -158,7 +157,6 @@ debounced 600ms after the destination settles; stale results fade.
   as `.card` rows with icon + `message` + the fix button where present
   ("Use final URL" replaces the destination). `private_address` →
   "Preview isn't available for internal addresses." (not an error tone).
-- Screenshot: the `data:` image in a browser-chrome frame.
 - QR: canvas rendering of `shortUrl?qr=1` (bundle `qrcode`), size 240,
   download PNG and SVG buttons. Tip: "Scans are counted separately from
   clicks."

@@ -1,7 +1,6 @@
 import mongoose from 'mongoose';
 import type { Request } from 'express';
 import type {
-  Actor,
   CallContext,
   DeleteSummary,
   HistoryEntry,
@@ -20,7 +19,7 @@ import { ShortyError } from '../shared/errors.js';
 import { composeUrl, parseUrl } from '../shared/url.js';
 import type { ResolvedContext } from './config.js';
 import type { HookRunner } from './hooks.js';
-import { toActor, toHistoryEntry, toLink } from './project.js';
+import { toHistoryEntry, toLink } from './project.js';
 import type { ParsedSlug, SlugService } from './slug.js';
 import {
   checkDestination, cleanHash, cleanOg, cleanParams, cleanSocial, cleanTags, cleanUtm,
@@ -83,17 +82,8 @@ export function createLinkService(ctx: ResolvedContext, slugs: SlugService, hook
 
   // ── small helpers ──────────────────────────────────────────────────────────
 
-  function actorOf(call?: CallContext): Actor | undefined {
-    if (call?.actor) return toActor(call.actor);
-    const resolved = call?.req ? ctx.resolveUser(call.req) : null;
-    return resolved ? toActor(resolved) : undefined;
-  }
-
   /** Hook payload extras: only the keys that are set. */
-  const extras = (actor?: Actor, req?: Request): { actor?: Actor; req?: Request } => ({
-    ...(actor ? { actor } : {}),
-    ...(req ? { req } : {}),
-  });
+  const extras = (req?: Request): { req?: Request } => (req ? { req } : {});
 
   async function findDoc(id: unknown): Promise<LinkDoc | null> {
     if (typeof id !== 'string' || !OBJECT_ID.test(id)) return null;
@@ -139,7 +129,6 @@ export function createLinkService(ctx: ResolvedContext, slugs: SlugService, hook
     const custom = input.slug === undefined || input.slug === null ? null : slugs.parse(input.slug);
 
     const now = ctx.now();
-    const actor = actorOf(call);
     const _id = new Types.ObjectId();
     const og = cleanOg(input.og);
     const title = optionalText(input.title, 'title');
@@ -179,7 +168,6 @@ export function createLinkService(ctx: ResolvedContext, slugs: SlugService, hook
       uniqueClicks: 0,
       botClicks: 0,
       archived: false,
-      ...(actor ? { createdBy: actor } : {}),
       createdAt: now,
       updatedAt: now,
     });
@@ -191,7 +179,7 @@ export function createLinkService(ctx: ResolvedContext, slugs: SlugService, hook
       try {
         await LinkModel.create(build(slug, origin));
         await History.create({
-          linkId: _id, kind: 'created', at: now, ...(actor ? { by: actor } : {}),
+          linkId: _id, kind: 'created', at: now,
           rev: 1, destination, slug: slug.display,
         });
       } catch (err) {
@@ -226,7 +214,7 @@ export function createLinkService(ctx: ResolvedContext, slugs: SlugService, hook
     }
 
     const link = toLink(ctx, (await requireDoc(String(_id))));
-    await hooks.hook('onCreate', { link, ...extras(actor, call?.req) });
+    await hooks.hook('onCreate', { link, ...extras(call?.req) });
     await hooks.track('shorty.link_created', link.id);
     return link;
   }
@@ -249,7 +237,7 @@ export function createLinkService(ctx: ResolvedContext, slugs: SlugService, hook
   }
 
   /** Pure given `doc`: validates the patch and says what to write. Never touches the database. */
-  function plan(doc: LinkDoc, patch: LinkPatch, actor: Actor | undefined, now: Date): Plan {
+  function plan(doc: LinkDoc, patch: LinkPatch, now: Date): Plan {
     const p: Plan = { noop: false, set: {}, unset: {}, bumpRev: false, entries: [] };
     const has = (key: keyof LinkPatch): boolean => patch[key] !== undefined;
     if (!(Object.keys(patch) as Array<keyof LinkPatch>).some(has)) return { ...p, noop: true };
@@ -258,7 +246,6 @@ export function createLinkService(ctx: ResolvedContext, slugs: SlugService, hook
       if (value === undefined) p.unset[field] = 1;
       else p.set[field] = value;
     };
-    const by = actor ? { by: actor } : {};
 
     // Destination.
     if (has('url') && (has('baseUrl') || has('utm') || has('params') || has('hash'))) {
@@ -283,7 +270,7 @@ export function createLinkService(ctx: ResolvedContext, slugs: SlugService, hook
         checkDestination(ctx, destination);
         p.bumpRev = true;
         p.entries.push({
-          kind: 'destination', at: now, ...by, rev: doc.rev + 1, destination, previous: doc.destination,
+          kind: 'destination', at: now, rev: doc.rev + 1, destination, previous: doc.destination,
         });
       }
       p.set.baseUrl = parts.baseUrl;
@@ -313,7 +300,7 @@ export function createLinkService(ctx: ResolvedContext, slugs: SlugService, hook
         p.set.aliases = aliases;
         p.set.keys = [to.key, ...aliases.map((a) => slugs.keyOf(a.slug))];
         p.set.ck = ctx.slug.caseSensitive;
-        p.entries.push({ kind: 'slug', at: now, ...by, from: doc.slug, to: to.display, mode });
+        p.entries.push({ kind: 'slug', at: now, from: doc.slug, to: to.display, mode });
       }
     }
 
@@ -342,18 +329,16 @@ export function createLinkService(ctx: ResolvedContext, slugs: SlugService, hook
     }
 
     p.set.updatedAt = now;
-    assign('updatedBy', actor);
     return p;
   }
 
   async function updateLink(id: string, patch: LinkPatch, call?: CallContext): Promise<Link> {
     if (!patch || typeof patch !== 'object') throw new ShortyError('validation', undefined, { field: 'body' });
-    const actor = actorOf(call);
     const now = ctx.now();
 
     for (let attempt = 0; attempt < UPDATE_ATTEMPTS; attempt += 1) {
       const doc = await requireDoc(id);
-      const p = plan(doc, patch, actor, now);
+      const p = plan(doc, patch, now);
       if (p.noop) return toLink(ctx, doc);
 
       const linkId = doc._id;
@@ -412,7 +397,7 @@ export function createLinkService(ctx: ResolvedContext, slugs: SlugService, hook
       const next = await requireDoc(id);
       const link = toLink(ctx, next);
       const history = p.entries.map((e) => toHistoryEntry(e as unknown as StoredHistory));
-      await hooks.hook('onUpdate', { link, prev: toLink(ctx, doc), history, ...extras(actor, call?.req) });
+      await hooks.hook('onUpdate', { link, prev: toLink(ctx, doc), history, ...extras(call?.req) });
       await hooks.track('shorty.link_updated', link.id);
       return link;
     }
@@ -425,23 +410,20 @@ export function createLinkService(ctx: ResolvedContext, slugs: SlugService, hook
     const doc = await requireDoc(id);
     // Already in that state: nothing changed, so no write, no hook, no event.
     if (doc.archived === archived) return toLink(ctx, doc);
-    const actor = actorOf(call);
     await LinkModel.updateOne(
       { _id: doc._id },
       {
-        $set: { archived, updatedAt: ctx.now(), ...(actor ? { updatedBy: actor } : {}) },
+        $set: { archived, updatedAt: ctx.now() },
         $inc: { wv: 1 },
-        ...(actor ? {} : { $unset: { updatedBy: 1 } }),
       },
     );
     const link = toLink(ctx, await requireDoc(id));
-    await hooks.hook('onArchive', { link, archived, ...extras(actor, call?.req) });
+    await hooks.hook('onArchive', { link, archived, ...extras(call?.req) });
     await hooks.track(archived ? 'shorty.link_archived' : 'shorty.link_unarchived', link.id);
     return link;
   }
 
   async function deleteLink(id: string, call?: CallContext): Promise<DeleteSummary> {
-    const actor = actorOf(call);
     const doc = await findDoc(id);
     let link: Link | null = null;
     if (doc) {
@@ -481,7 +463,7 @@ export function createLinkService(ctx: ResolvedContext, slugs: SlugService, hook
     };
     // A retry has no Link left to hand to the hooks.
     if (link) {
-      await hooks.hook('onDelete', { link, summary, ...extras(actor, call?.req) });
+      await hooks.hook('onDelete', { link, summary, ...extras(call?.req) });
       await hooks.track('shorty.link_deleted', link.id);
     }
     return summary;

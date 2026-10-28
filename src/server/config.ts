@@ -1,13 +1,11 @@
 import type { Request } from 'express';
 import dns from 'node:dns';
 import type {
-  Actor,
   CreateShortyConfig,
   GeoResult,
   Logger,
   RedirectStatus,
   RenameMode,
-  ResolveUser,
   ShortyModels,
   UiOptions,
 } from '../../types/index.js';
@@ -33,7 +31,6 @@ export interface ResolvedContext {
   logger: Logger;
   now: () => Date;
   listLimit: number;
-  resolveUser: ResolveUser;
   slug: {
     length: number;
     alphabet: string;
@@ -69,28 +66,9 @@ export interface ResolvedContext {
     isAllowedAddress: ((ip: string) => boolean) | null;
     userAgent: string;
   };
-  screenshot: CreateShortyConfig['screenshot'] | null;
   hooks: Pick<CreateShortyConfig, 'onClick' | 'onCreate' | 'onUpdate' | 'onArchive' | 'onDelete' | 'onMiss'>;
   track: NonNullable<CreateShortyConfig['track']>;
   ui: UiOptions;
-}
-
-interface AuthedRequestish {
-  authUserId?: unknown;
-  user?: { _id?: unknown; id?: unknown; name?: string; displayName?: string; email?: string };
-}
-
-/**
- * Reads the conventional spots upstream auth middleware leaves things:
- * `req.authUserId`, `req.user._id` / `req.user.id`, and a display name from
- * `name`, `displayName` or `email`. Pure read — never verifies anything.
- */
-export function defaultResolveUser(req: Request): Actor | null {
-  const { authUserId, user } = req as Request & AuthedRequestish;
-  const id = authUserId ?? user?._id ?? user?.id;
-  if (id === undefined || id === null || id === '') return null;
-  const name = user?.name ?? user?.displayName ?? user?.email;
-  return { id: String(id), ...(name ? { name } : {}) };
 }
 
 /** Country from the common CDN headers. Region/city need the host's own geo. */
@@ -140,7 +118,6 @@ export function resolveConfig(config: CreateShortyConfig): ResolvedContext {
     logger = NOOP_LOGGER,
     listLimit = 200,
     now = () => new Date(),
-    resolveUser = defaultResolveUser,
     track = () => {},
   } = config;
 
@@ -158,7 +135,6 @@ export function resolveConfig(config: CreateShortyConfig): ResolvedContext {
   if (base.protocol !== 'http:' && base.protocol !== 'https:') fail('`publicBaseUrl` must be http(s)');
   if (base.search || base.hash) fail('`publicBaseUrl` must not carry a query or fragment');
 
-  if (typeof resolveUser !== 'function') fail('`resolveUser` must be a function');
   if (typeof track !== 'function') fail('`track` must be a function');
 
   const slug = config.slug ?? {};
@@ -221,7 +197,6 @@ export function resolveConfig(config: CreateShortyConfig): ResolvedContext {
     logger,
     now,
     listLimit,
-    resolveUser,
     slug: {
       length,
       alphabet,
@@ -260,7 +235,6 @@ export function resolveConfig(config: CreateShortyConfig): ResolvedContext {
       isAllowedAddress: inspect.isAllowedAddress ?? null,
       userAgent: inspect.userAgent ?? 'shorty-inspect (+link preview)',
     },
-    screenshot: config.screenshot ?? null,
     hooks: {
       onClick: config.onClick,
       onCreate: config.onCreate,

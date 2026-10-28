@@ -40,7 +40,6 @@ export const MISS_TTL_SECONDS = 30 * 24 * 60 * 60;
 
 const { Types } = mongoose.Schema;
 
-const actor = new mongoose.Schema({ id: { type: String, required: true }, name: String }, { _id: false });
 const param = new mongoose.Schema({ key: { type: String, required: true }, value: { type: String, default: '' } }, { _id: false });
 const utm = new mongoose.Schema({
   source: String, medium: String, campaign: String, term: String, content: String, id: String,
@@ -84,8 +83,6 @@ export function buildLinkSchema(): Schema {
     botClicks: { type: Number, default: 0 },
     lastClickedAt: Date,
     archived: { type: Boolean, default: false },
-    createdBy: actor,
-    updatedBy: actor,
     // Set from `config.now()` by the service — NOT mongoose `timestamps`, which
     // reads the wall clock and makes ordering untestable and replays wrong.
     createdAt: { type: Date, required: true },
@@ -124,7 +121,6 @@ export function buildHistorySchema(): Schema {
     linkId: { type: Types.ObjectId, required: true },
     kind: { type: String, enum: ['created', 'destination', 'slug'], required: true },
     at: { type: Date, required: true },
-    by: actor,
     rev: Number,
     destination: String,
     previous: String,
