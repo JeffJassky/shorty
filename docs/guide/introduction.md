@@ -50,4 +50,4 @@ your app, and without a Redis, queue or worker to run.
 
 Password-protected links, cloaking, A/B splits, device or geo targeting,
 signed webhooks (use the [hooks](./hooks)), multiple domains per instance,
-bulk CSV import, a built-in screenshotter or GeoIP database.
+bulk CSV import, or a built-in GeoIP database.

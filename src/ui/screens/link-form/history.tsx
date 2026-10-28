@@ -71,7 +71,7 @@ export function History({ link, onDeleted }: { link: LinkJson; onDeleted: () => 
             <li key={`${e.kind}-${e.at}-${i}`}>
               <div className="tl-head">
                 <strong>{e.kind === 'created' ? 'Created' : e.kind === 'destination' ? 'Destination changed' : 'Renamed'}</strong>
-                <span className="muted text-xs">{fmtDateTime(e.at)}{e.by?.name ? ` · ${e.by.name}` : ''}</span>
+                <span className="muted text-xs">{fmtDateTime(e.at)}</span>
               </div>
               {e.kind === 'created' && <code className="tl-url">{e.destination}</code>}
               {e.kind === 'destination' && <Diff from={e.previous} to={e.destination} />}

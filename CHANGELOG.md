@@ -19,10 +19,10 @@ First release (0.1.0).
 - Click analytics: pipeline that runs after the response, daily-rotating HMAC visitor hash (no IP stored), unique window, bot/human split everywhere, daily rollups kept forever, TTL'd raw clicks, `onClick` / `track`.
 - Stats API and UI with humans and bots always separate; breakdowns for referrer, country, device, browser, OS and QR vs link; overview with top links and top campaigns.
 - Admin JSON API (`shorty.routes`) and typed fetch client (`@jeffjassky/shorty/client`).
-- Admin UI: links list, create/edit form with anatomy panel, comboboxes and previews (social cards, destination health, QR, optional screenshot), link detail, analytics overview. Hand-rolled SVG charts, light and dark themes, usable at 375px.
-- `inspect`: SSRF-hardened destination fetch (DNS resolved once per hop and pinned, address policy allowing public unicast only, `isAllowedAddress` override, linear head parsing); `ScreenshotAdapter` receives the checked `addresses` and owns its own egress policy.
+- Admin UI: links list, create/edit form with anatomy panel, comboboxes and previews (social cards, destination health, QR), link detail, analytics overview. Hand-rolled SVG charts, light and dark themes, usable at 375px.
+- `inspect`: SSRF-hardened destination fetch (DNS resolved once per hop and pinned, address policy allowing public unicast only, `isAllowedAddress` override, linear head parsing).
 - Integrity under concurrency: every link carries a write version (`wv`) that `updateLink` pins; claims are released only after confirming the link does not hold them; deletes racing updates or clicks leave no orphan rows; per-link case-mode stamp (`ck`) re-keyed on every boot.
-- Hooks (`onClick`, `onCreate`, `onUpdate`, `onArchive`, `onDelete`, `onMiss`), `track`, `resolveUser`, `geo`, `ip` adapters.
+- Hooks (`onClick`, `onCreate`, `onUpdate`, `onArchive`, `onDelete`, `onMiss`), `track`, `geo`, `ip` adapters.
 - Hot-path hardening: the slug lookup is bounded by `redirect.lookupTimeoutMs` (default 2000 ms) and fails at once on a closed connection, handing the request to `next(err)`; `clicks.maxInFlight` (default 10000) skips click and miss pipelines past the cap and counts them in `health().dropped`; `onMiss` / `onExpired` are validated at `createShorty`; malformed `%` escapes in forwarded query parts go through verbatim; `Click.queryKeys` is capped at 20 keys of 64 characters (`qr` excluded); `Vary: User-Agent` on every redirect and social card; `Cache-Control: private, max-age=0` on 302/307 redirects and on shorty's own 404 / 410.
 - Documentation site, Playwright end-to-end suite (run in CI), runnable example host.
 

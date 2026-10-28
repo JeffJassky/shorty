@@ -14,7 +14,6 @@ import { createSlugService } from './slug.js';
 import { createStats } from './stats.js';
 import { createUiRouter, defaultSpaDir } from './ui.js';
 
-export { defaultResolveUser } from './config.js';
 export { ShortyError, ERROR_STATUS } from './errors.js';
 export { composeUrl, parseUrl } from '../shared/url.js';
 export { defaultSpaDir };

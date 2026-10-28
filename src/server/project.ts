@@ -1,4 +1,4 @@
-import type { Actor, HistoryEntry, Link, LinkDoc } from '../../types/index.js';
+import type { HistoryEntry, Link, LinkDoc } from '../../types/index.js';
 import type { ResolvedContext } from './config.js';
 
 /**
@@ -38,19 +38,12 @@ export function toLink(ctx: ResolvedContext, doc: LinkDoc): Link {
   if (doc.social) link.social = { ...doc.social };
   if (doc.og) link.og = { ...doc.og };
   if (doc.lastClickedAt) link.lastClickedAt = doc.lastClickedAt;
-  if (doc.createdBy) link.createdBy = toActor(doc.createdBy);
-  if (doc.updatedBy) link.updatedBy = toActor(doc.updatedBy);
   return link;
-}
-
-export function toActor(a: Actor): Actor {
-  return { id: a.id, ...(a.name ? { name: a.name } : {}) };
 }
 
 interface StoredHistory {
   kind: HistoryEntry['kind'];
   at: Date;
-  by?: Actor;
   rev?: number;
   destination?: string;
   previous?: string;
@@ -61,18 +54,17 @@ interface StoredHistory {
 }
 
 export function toHistoryEntry(doc: StoredHistory): HistoryEntry {
-  const by = doc.by ? { by: toActor(doc.by) } : {};
   switch (doc.kind) {
     case 'created':
-      return { kind: 'created', at: doc.at, ...by, rev: 1, destination: doc.destination ?? '', slug: doc.slug ?? '' };
+      return { kind: 'created', at: doc.at, rev: 1, destination: doc.destination ?? '', slug: doc.slug ?? '' };
     case 'destination':
       return {
-        kind: 'destination', at: doc.at, ...by, rev: doc.rev ?? 0,
+        kind: 'destination', at: doc.at, rev: doc.rev ?? 0,
         destination: doc.destination ?? '', previous: doc.previous ?? '',
       };
     default:
       return {
-        kind: 'slug', at: doc.at, ...by, from: doc.from ?? '', to: doc.to ?? '',
+        kind: 'slug', at: doc.at, from: doc.from ?? '', to: doc.to ?? '',
         mode: (doc.mode ?? 'alias') as Extract<HistoryEntry, { kind: 'slug' }>['mode'],
       };
   }

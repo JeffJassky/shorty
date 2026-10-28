@@ -33,7 +33,7 @@ export function useInspect(client: ShortyClient, url: string | null): InspectSta
   return { result, stale: url !== null && loadedFor !== url };
 }
 
-type Tab = 'social' | 'destination' | 'screenshot' | 'qr';
+type Tab = 'social' | 'destination' | 'qr';
 
 function statusTone(status: number): 'green' | 'amber' | 'red' {
   if (status >= 400) return 'red';
@@ -83,12 +83,11 @@ function Destination({ state, onUseFinalUrl }: { state: InspectState; onUseFinal
 }
 
 export function Preview({
-  draft, composedUrl, inspect, screenshotEnabled, shortUrl, slugName, onUseFinalUrl,
+  draft, composedUrl, inspect, shortUrl, slugName, onUseFinalUrl,
 }: {
   draft: Draft;
   composedUrl: string;
   inspect: InspectState;
-  screenshotEnabled: boolean;
   /** Public short URL when the slug is known. */
   shortUrl: string | null;
   slugName: string;
@@ -98,7 +97,6 @@ export function Preview({
   const tabs: Array<{ id: Tab; label: string }> = [
     { id: 'social', label: 'Social' },
     { id: 'destination', label: 'Destination' },
-    ...(screenshotEnabled ? [{ id: 'screenshot' as const, label: 'Screenshot' }] : []),
     { id: 'qr', label: 'QR' },
   ];
   React.useEffect(() => { if (!tabs.some((t) => t.id === tab)) setTab('social'); }, [tabs, tab]);
@@ -145,14 +143,6 @@ export function Preview({
       <div id="pv-panel" role="tabpanel" aria-labelledby={`pv-tab-${tab}`} className={'preview-body' + (inspect.stale ? ' stale' : '')}>
         {tab === 'social' && <SocialCards data={card} />}
         {tab === 'destination' && <Destination state={inspect} onUseFinalUrl={onUseFinalUrl} />}
-        {tab === 'screenshot' && (
-          <div className="browser-frame">
-            <div className="browser-bar"><span /><span /><span /><code>{domain}</code></div>
-            {inspect.result?.screenshot
-              ? <img src={inspect.result.screenshot} alt={`Screenshot of ${domain}`} />
-              : <p className="muted text-sm" style={{ padding: 16 }}>{inspect.stale ? 'Checking…' : 'No screenshot available.'}</p>}
-          </div>
-        )}
         {tab === 'qr' && shortUrl && <QrPanel shortUrl={shortUrl} name={slugName || 'qr'} />}
       </div>
     </section>

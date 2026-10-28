@@ -2,7 +2,7 @@
 
 ```ts
 import createShorty, { createShorty, composeUrl, parseUrl, defaultSpaDir,
-  defaultResolveUser, ShortyError, ERROR_STATUS } from '@jeffjassky/shorty';
+  ShortyError, ERROR_STATUS } from '@jeffjassky/shorty';
 ```
 
 `createShorty(config: CreateShortyConfig): ShortyInstance` validates the
@@ -27,7 +27,7 @@ config and returns the instance. Nothing touches the database until
 
 ## Writes
 
-Each takes an optional `ctx: { actor?, req? }`; hooks receive it.
+Each takes an optional `ctx: { req? }`; hooks receive it.
 
 | Method | Notes |
 |---|---|
@@ -59,7 +59,6 @@ An unknown `id` is `not_found`.
 
 - `composeUrl(parts)` / `parseUrl(url)`: see [UTM & parameters](../guide/utm).
 - `defaultSpaDir()`: the directory of the built SPA.
-- `defaultResolveUser(req)`: id from `req.authUserId ?? req.user._id ?? req.user.id`; name from `req.user.name ?? displayName ?? email`.
 
 ## Errors
 

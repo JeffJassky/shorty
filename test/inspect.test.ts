@@ -8,7 +8,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { AddressInfo } from 'node:net';
 import { ShortyError } from '../src/shared/errors.js';
-import type { InspectConfig, InspectResult, InspectWarningCode, ScreenshotAdapter } from '../types/index.js';
+import type { InspectConfig, InspectResult, InspectWarningCode } from '../types/index.js';
 import { allowLoopback, harness, page, redirectTo, startSite, startDb, stopDb } from './helpers.js';
 import type { Site, SiteHandler } from './helpers.js';
 
@@ -29,8 +29,8 @@ async function site(routes: Record<string, SiteHandler>): Promise<Site> {
   return s;
 }
 
-async function inspector(inspect: InspectConfig = {}, extra: { screenshot?: ScreenshotAdapter } = {}) {
-  const h = await harness({ config: { inspect, ...extra } });
+async function inspector(inspect: InspectConfig = {}) {
+  const h = await harness({ config: { inspect } });
   return h.shorty;
 }
 
@@ -527,57 +527,6 @@ describe('inspect — input validation', () => {
   });
 });
 
-describe('inspect — screenshot adapter', () => {
-  it('leaves screenshot undefined when no adapter is configured', async () => {
-    const s = await site({ '/': page('<title>S</title>') });
-    const r = await (await local()).inspect(`${s.origin}/`);
-    expect(r.screenshot).toBeUndefined();
-  });
-
-  it('returns the adapter image as a base64 data URL', async () => {
-    const s = await site({ '/': page('<title>S</title>') });
-    const body = Buffer.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]);
-    const asked: string[] = [];
-    const shorty = await inspector(
-      { isAllowedAddress: allowLoopback },
-      { screenshot: async (url) => { asked.push(url); return { contentType: 'image/png', body }; } },
-    );
-    const r = await shorty.inspect(`${s.origin}/`);
-    expect(r.screenshot).toBe(`data:image/png;base64,${body.toString('base64')}`);
-    expect(asked).toHaveLength(1);
-  });
-
-  it('leaves screenshot undefined when the adapter returns null', async () => {
-    const s = await site({ '/': page('<title>S</title>') });
-    const shorty = await inspector({ isAllowedAddress: allowLoopback }, { screenshot: async () => null });
-    expect((await shorty.inspect(`${s.origin}/`)).screenshot).toBeUndefined();
-  });
-
-  it('does not hand a refused (private) url to the screenshot adapter — no SSRF side door', async () => {
-    const asked: string[] = [];
-    const shorty = await inspector({}, {
-      screenshot: async (url) => { asked.push(url); return { contentType: 'image/png', body: Buffer.from('x') }; },
-    });
-    const r = await shorty.inspect('http://169.254.169.254/latest/meta-data/');
-    expect(codes(r)).toContain('private_address');
-    expect(asked).toEqual([]);
-    expect(r.screenshot).toBeUndefined();
-  });
-
-  it('does not fail the inspect when the adapter throws', async () => {
-    const s = await site({ '/': page('<title>Still here</title>') });
-    const shorty = await inspector(
-      { isAllowedAddress: allowLoopback },
-      { screenshot: async () => { throw new Error('browser crashed'); } },
-    );
-    const r = await shorty.inspect(`${s.origin}/`);
-    expect(r.screenshot).toBeUndefined();
-    expect(r.og.title).toBe('Still here');
-    expect(r.final?.status).toBe(200);
-    expect(codes(r)).not.toContain('unreachable');
-  });
-});
-
 describe('inspect — default address policy, edges (audit follow-up)', () => {
   // Public addresses below would make a real outbound attempt; a 300 ms budget
   // keeps it bounded. 'unreachable' is fine — only 'private_address' is wrong.
@@ -702,19 +651,6 @@ describe('inspect — budget and body handling (audit follow-up)', () => {
     expect(ms).toBeLessThan(2000);
   });
 
-  it('bounds a screenshot adapter that never resolves by timeoutMs, keeping the scraped OG', async () => {
-    const s = await site({ '/': page('<title>Fast page</title>') });
-    const shorty = await inspector(
-      { isAllowedAddress: allowLoopback, timeoutMs: 500 },
-      { screenshot: () => new Promise(() => {}) },
-    );
-    const { value: r, ms } = await timed(() => shorty.inspect(`${s.origin}/`));
-    expect(ms).toBeLessThan(2500);
-    expect(r.screenshot).toBeUndefined();
-    expect(r.og.title).toBe('Fast page');
-    expect(r.final?.status).toBe(200);
-  });
-
   it('stops at maxBytes on an endless head that never reaches </head> — 200 with partial OG, not unreachable', async () => {
     const s = await site({
       '/endless': (_req, res) => {
@@ -745,27 +681,6 @@ describe('inspect — budget and body handling (audit follow-up)', () => {
     const r = await (await local()).inspect(`${s.origin}/img.png`);
     expect(r.final?.status).toBe(200);
     expect(r.og).toEqual({});
-  });
-
-  it('hands the screenshot adapter the FINAL url after redirects', async () => {
-    const s = await site({ '/start': redirectTo('/landing'), '/landing': page('<title>L</title>') });
-    const asked: string[] = [];
-    const shorty = await inspector(
-      { isAllowedAddress: allowLoopback },
-      { screenshot: async (url) => { asked.push(url); return null; } },
-    );
-    await shorty.inspect(`${s.origin}/start`);
-    expect(asked).toEqual([`${s.origin}/landing`]);
-  });
-
-  it('does not call the screenshot adapter for an unreachable destination', async () => {
-    const asked: string[] = [];
-    const shorty = await inspector(
-      { isAllowedAddress: () => true, lookup: async () => { throw new Error('ENOTFOUND'); } },
-      { screenshot: async (url) => { asked.push(url); return null; } },
-    );
-    await shorty.inspect('http://nxdomain.test/');
-    expect(asked).toEqual([]);
   });
 
   it('sends the default User-Agent when none is configured', async () => {
@@ -827,20 +742,6 @@ describe('inspect — PR 3 review follow-ups', () => {
     });
     const r = await (await local()).inspect(`${s.origin}/`);
     expect(r.og.title).toBe('After the decoys');
-  });
-
-  it.each([
-    [{ contentType: 123, body: 'x' }],
-    [{ contentType: null, body: null }],
-    [{}],
-    ['not an object'],
-  ])('does not reject when the screenshot adapter returns garbage (%j)', async (garbage) => {
-    const s = await site({ '/': page('<title>T</title>') });
-    const shot = (async () => garbage) as unknown as ScreenshotAdapter;
-    const shorty = await inspector({ isAllowedAddress: allowLoopback }, { screenshot: shot });
-    const r = await shorty.inspect(`${s.origin}/`);
-    expect(r.og.title).toBe('T');
-    expect(r.screenshot).toBeUndefined();
   });
 
   describe('over https', () => {
@@ -994,46 +895,6 @@ describe('End review (b) follow-ups', () => {
     const shorty = await inspector({ timeoutMs: 300, lookup: async () => [addr] });
     const r = await shorty.inspect('http://public.test:9/');
     expect(codes(r)).not.toContain('private_address');
-  });
-
-  // ── screenshot adapter: gets the checked addresses so it can pin ───────────
-  it('hands the screenshot adapter the addresses the safe fetch checked and connected to', async () => {
-    const s = await site({ '/': page('<title>S</title>') });
-    const seen: Array<{ url: string; addresses: unknown }> = [];
-    const shorty = await inspector(
-      { isAllowedAddress: allowLoopback, lookup: async () => ['127.0.0.1'] },
-      { screenshot: async (url, ctx) => { seen.push({ url, addresses: ctx?.addresses }); return null; } },
-    );
-    await shorty.inspect(`http://public.test:${s.port}/`);
-    expect(seen).toEqual([{ url: `http://public.test:${s.port}/`, addresses: ['127.0.0.1'] }]);
-  });
-
-  it('hands the screenshot adapter the FINAL hop\'s addresses, not the first hop\'s', async (ctx) => {
-    // Second hop on ::1 so the two hops' addresses differ. Skips where the
-    // host has no v6 loopback.
-    const v6 = nodeHttp.createServer((_req, res) => { res.setHeader('content-type', 'text/html'); res.end('<title>B</title>'); });
-    const bound = await new Promise<boolean>((resolve) => {
-      v6.once('error', () => resolve(false));
-      v6.listen(0, '::1', () => resolve(true));
-    });
-    if (!bound) { ctx.skip(); return; }
-    try {
-      const v6port = (v6.address() as AddressInfo).port;
-      const s = await site({ '/': redirectTo(`http://b.test:${v6port}/`) });
-      const seen: unknown[] = [];
-      const shorty = await inspector(
-        {
-          isAllowedAddress: (ip) => ip === '127.0.0.1' || ip === '::1',
-          lookup: async (host) => (host === 'a.test' ? ['127.0.0.1'] : ['::1']),
-        },
-        { screenshot: async (_url, c) => { seen.push(c?.addresses); return null; } },
-      );
-      const r = await shorty.inspect(`http://a.test:${s.port}/`);
-      expect(r.final?.url).toBe(`http://b.test:${v6port}/`);
-      expect(seen).toEqual([['::1']]);
-    } finally {
-      await new Promise<void>((resolve) => v6.close(() => resolve()));
-    }
   });
 
   // ── proxy env: inspect must never go through a proxy ───────────────────────

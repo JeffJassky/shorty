@@ -223,8 +223,6 @@ export type FetchOutcome =
       /** A hop answered and the chain ended there. */
       final: { url: string; status: number; ms: number };
       headers: http.IncomingHttpHeaders;
-      /** The checked addresses the final hop connected to. */
-      addresses: string[];
       /** Raw head bytes, `text/html` only. */
       body?: Buffer;
       failure?: undefined;
@@ -233,7 +231,6 @@ export type FetchOutcome =
       chain: Array<{ url: string; status: number }>;
       final?: undefined;
       headers?: undefined;
-      addresses?: undefined;
       body?: undefined;
       failure: 'private_address' | 'unreachable';
     };
@@ -303,7 +300,6 @@ export async function safeFetch(start: URL, cfg: InspectCtx, signal: AbortSignal
       ...out,
       final: { url: key, status: hop.status, ms: Date.now() - t0 },
       headers: hop.headers,
-      addresses,
       ...(hop.body ? { body: hop.body } : {}),
     };
   }

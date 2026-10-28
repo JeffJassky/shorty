@@ -8,10 +8,10 @@ in `health().hookFailures`, and never fails a write or a redirect.
 | Hook | When | Payload |
 |---|---|---|
 | `onClick` | after the redirect is sent; bots included, flagged | `{ link, click, req }` |
-| `onCreate` | before `createLink` resolves | `{ link, actor?, req? }` |
-| `onUpdate` | before `updateLink` resolves | `{ link, prev, history, actor?, req? }` (only the history entries this update wrote) |
-| `onArchive` | archive and unarchive | `{ link, archived, actor?, req? }` |
-| `onDelete` | before `deleteLink` resolves | `{ link, summary, actor?, req? }` |
+| `onCreate` | before `createLink` resolves | `{ link, req? }` |
+| `onUpdate` | before `updateLink` resolves | `{ link, prev, history, req? }` (only the history entries this update wrote) |
+| `onArchive` | archive and unarchive | `{ link, archived, req? }` |
+| `onDelete` | before `deleteLink` resolves | `{ link, summary, req? }` |
 | `onMiss` | an unknown slug was requested | `{ path, req }` |
 
 `onClick` is not called when recording is off or the hit was expired (no click
@@ -22,7 +22,7 @@ slugs are not misses.
 createShorty({
   // ...
   onClick: ({ link, click }) => warehouse.insert({ slug: link.slug, bot: click.bot }),
-  onCreate: ({ link, actor }) => audit.log('link.created', link.id, actor?.id),
+  onCreate: ({ link, req }) => audit.log('link.created', link.id, req?.ip),
 });
 ```
 

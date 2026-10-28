@@ -6,7 +6,7 @@ Dub, Bitly, Short.io, Rebrandly, Shlink, Kutt and YOURLS. Config keys below cite
 that consensus instead of a recon (process/3-build-plan.md, "be suspicious of
 keys you invented" — each one names the products that prove it).
 
-Status: **approved** (2026-10-26, via `/scaffold shorty`). Decisions taken from the user:
+Status: **approved** (2026-10-26, via `/scaffold shorty`). 2026-10-28 owner decision: no user adapter (no user-specific functionality; hooks still receive req) and no screenshot adapter (previews are OG-only). Decisions taken from the user:
 name `shorty`; built-in click storage + dashboard; admin and public mount paths
 are both the host's choice, and shorty is agnostic to route order; editing
 allowed "within reason" (defined in §7.3); create form offers auto-generated or
@@ -107,10 +107,6 @@ interface ShortyConfig {
     ip?: (req) => string | undefined     // default req.ip — host owns trust proxy
   }
 
-  resolveUser?: (req) => { id: string; name?: string } | null   // stamps createdBy/updatedBy
-  screenshot?: (url: string) => Promise<{ contentType: string; body: Buffer } | null>
-                                         // optional adapter, §4; UI hides the tab when absent
-
   // hooks — mailery's top-level onX style; all optional, all awaited-and-caught, none can break a redirect.
   // Exact event shapes: types/index.d.ts (the contract wins over this sketch).
   onClick?:   (e: ClickEvent) => void | Promise<void>   // after the response is sent; bots included, flagged
@@ -144,25 +140,15 @@ interface ShortyConfig {
 | hashed visitor, no raw IP | Shlink anonymize default, Kutt stores none |
 | `onClick` / `onCreate` / `onUpdate` / `onDelete` | Dub `link.clicked|created|updated|deleted` webhooks — as hooks, so the host decides transport |
 | `onMiss` | Shlink orphan visits |
-| `screenshot` | **no product has it** — adapter only, see §4 |
 
 ## 4. Adapters — both directions
 
 | Adapter | Inbound (shorty → host) | Outbound (host → shorty) | Default when absent |
 |---|---|---|---|
-| `resolveUser` | asks who is acting | `{ id, name }` or null | `createdBy` unset |
 | `geo` | hands `req` | country/region/city | CDN-header reader; nothing if no header |
 | `ip` | hands `req` | client IP string | `req.ip` |
-| `screenshot` | a destination URL | image bytes or null | preview tab hidden |
 | `track` | event name + attrs/subjects | nothing | no-op |
 | `onX` hooks | the event object | nothing; throws are logged, never propagate | no-op |
-
-`screenshot` is an adapter, not a feature, on purpose: rendering a page needs a
-headless browser (≈150 MB dependency) or a paid API. A host that already runs
-Playwright (complykit does) passes a 5-line function. An iframe preview was
-considered and rejected: most real destinations send `X-Frame-Options` /
-`frame-ancestors`, so it would show a blank box on exactly the sites people link
-to most.
 
 ## 5. Package split
 
@@ -207,7 +193,7 @@ package (featureboard precedent).
   rev: number,                   // increments on destination change
   clicks: number, uniqueClicks: number, lastClickedAt?,       // humans
   botClicks: number,                                          // bots, kept apart — views add them or not
-  archived: boolean, createdBy?, updatedBy?, createdAt, updatedAt
+  archived: boolean, createdAt, updatedAt
 }
 ```
 Indexes: `{ keys: 1 }`; `{ archived: 1, createdAt: -1 }`;
@@ -321,7 +307,7 @@ Returns:
 ```ts
 { og: { title, description, image, siteName, favicon },   // og → twitter → <title> fallback chain
   final: { url, status, ms }, chain: [{ url, status }],
-  warnings: Warning[], screenshot?: string /* data URL, only with adapter */ }
+  warnings: Warning[] }
 ```
 Warnings — the bit that makes the form better than Bitly's:
 - `query_dropped`: destination redirects and the final URL lost the UTMs
@@ -383,7 +369,7 @@ create form opens prefilled (Dub).
 - **Preview panel** (tabs): Social card as X / LinkedIn / Facebook / Slack /
   iMessage render it (from `inspect`, or `social` override when set);
   Destination health (final URL, status, chain, warnings with one-click fixes —
-  "use final URL"); Screenshot (only with adapter); QR (download PNG/SVG).
+  "use final URL"); QR (download PNG/SVG).
 - *Notes, tags* — visible.
 - **Advanced** (collapsed, remembers state): redirect status, forward query,
   expiry date / max clicks / expired URL, custom social card (title, description,

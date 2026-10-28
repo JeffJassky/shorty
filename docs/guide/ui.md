@@ -31,9 +31,6 @@ Write a test that asserts an unauthenticated request to both mounts is
 refused. `examples/express/server.js` shows the shape; the example's
 `admin-guard.test.js` is meant to be copied into your suite.
 
-`resolveUser` (optional) tells shorty who is acting, for `createdBy` /
-`updatedBy` and history. It is information, never authorization.
-
 ## `loginUrl`
 
 When a session expires mid-page the API answers 401 or 403. With `loginUrl`
@@ -71,7 +68,7 @@ hash. The short link is **Auto** (generated, with a regenerate button) or
 are comboboxes over your existing values with near-duplicate lint. A live
 **anatomy** panel colours the final URL by segment, and the preview tabs show
 social cards (X, LinkedIn, Facebook, Slack, iMessage), destination health with
-one-click fixes, an optional screenshot, and a downloadable QR code. The slug
+one-click fixes, and a downloadable QR code. The slug
 field follows `slug.rename`: locked with an explanation, or a confirm that
 spells out what breaks.
 

@@ -50,7 +50,6 @@ export function buildRuntimeConfig(ctx: ResolvedContext, opts: UiOptions): UiRun
     slug: { length: ctx.slug.length, caseSensitive: ctx.slug.caseSensitive, rename: ctx.slug.rename },
     redirect: { status: ctx.redirect.status, forwardQuery: ctx.redirect.forwardQuery },
     clicksEnabled: ctx.clicks.enabled,
-    screenshot: Boolean(ctx.screenshot),
   };
 }
 

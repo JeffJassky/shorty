@@ -34,7 +34,6 @@ const shorty = createShorty({
   publicBaseUrl: `http://127.0.0.1:${port}/go`,
   pepper: 'example-pepper-change-me',
   slug: { rename: process.env.SHORTY_RENAME || 'alias' },
-  resolveUser: (req) => (req.person ? { id: req.person.id, name: req.person.name } : null),
   onClick: ({ link, click }) => console.log(`click ${link.slug}${click.bot ? ' (bot)' : ''}`),
   logger: console,
 });

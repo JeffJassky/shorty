@@ -362,7 +362,6 @@ function LinkForm({ initialLink, config, onClose, onGone, closeAfterSave }: {
                     draft={draft}
                     composedUrl={composed}
                     inspect={inspect}
-                    screenshotEnabled={config.screenshot}
                     shortUrl={shortUrl}
                     slugName={shownSlug}
                     onUseFinalUrl={commitDestination}

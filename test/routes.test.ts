@@ -298,15 +298,6 @@ describe('routes — literal paths are not shadowed (traps #4)', () => {
 });
 
 describe('routes — unexpected failures answer JSON, not HTML (traps #6)', () => {
-  it('answers 500 { error: internal_error } as JSON when resolveUser throws', async () => {
-    const h = await harness({ config: { resolveUser: () => { throw new Error('session store down'); } } });
-    const res = await request(h.app).post(`${API}/links`).send({ url: 'https://example.com/a' });
-    expect(res.status).toBe(500);
-    expect(res.headers['content-type']).toMatch(/application\/json/);
-    expect(res.body).toEqual({ error: 'internal_error' });
-    expect(res.text).not.toMatch(/<html|<pre|session store down/i);
-  });
-
   it('answers 500 { error: internal_error } as JSON when the links model throws', async () => {
     const h = await harness();
     await create(h, { url: 'https://example.com/a' });
@@ -385,54 +376,28 @@ describe('routes — list caps and cursors', () => {
   });
 });
 
-describe('routes — actor stamping', () => {
-  it('stamps createdBy and updatedBy from resolveUser', async () => {
-    const h = await harness();
-    h.session.actor = { id: 'u_1', name: 'Ann Admin' };
-    const link = await create(h, { url: 'https://example.com/a' });
-    expect(link.createdBy).toEqual({ id: 'u_1', name: 'Ann Admin' });
-
-    h.session.actor = { id: 'u_2', name: 'Bob' };
-    const res = await request(h.app).patch(`${API}/links/${link.id}`).send({ title: 'T' });
-    expect(res.body.link.updatedBy).toEqual({ id: 'u_2', name: 'Bob' });
-    expect(res.body.link.createdBy).toEqual({ id: 'u_1', name: 'Ann Admin' });
-  });
-
-  it('does not 401 when resolveUser knows nobody — the host guards, not shorty', async () => {
-    const h = await harness();
-    h.session.actor = null;
-    const res = await request(h.app).post(`${API}/links`).send({ url: 'https://example.com/a' });
-    expect(res.status).toBe(201);
-    expect(res.body.link.createdBy).toBeUndefined();
-    const list = await request(h.app).get(`${API}/links`);
-    expect(list.status).toBe(200);
-  });
-});
-
-describe('routes — hooks receive req and actor (audit follow-up)', () => {
-  it('passes req and the resolveUser actor to onCreate/onUpdate/onArchive/onDelete when called over HTTP', async () => {
-    const seen: Record<string, { actor?: unknown; url?: string; extra?: unknown }> = {};
+describe('routes — hooks receive req (audit follow-up)', () => {
+  it('passes req to onCreate/onUpdate/onArchive/onDelete when called over HTTP', async () => {
+    const seen: Record<string, { url?: string; extra?: unknown }> = {};
     const h = await harness({
       config: {
-        onCreate: (e) => { seen.create = { actor: e.actor, url: e.req?.originalUrl }; },
-        onUpdate: (e) => { seen.update = { actor: e.actor, url: e.req?.originalUrl, extra: e.prev.title }; },
-        onArchive: (e) => { seen.archive = { actor: e.actor, url: e.req?.originalUrl, extra: e.archived }; },
-        onDelete: (e) => { seen.delete = { actor: e.actor, url: e.req?.originalUrl, extra: e.summary.keys }; },
+        onCreate: (e) => { seen.create = { url: e.req?.originalUrl }; },
+        onUpdate: (e) => { seen.update = { url: e.req?.originalUrl, extra: e.prev.title }; },
+        onArchive: (e) => { seen.archive = { url: e.req?.originalUrl, extra: e.archived }; },
+        onDelete: (e) => { seen.delete = { url: e.req?.originalUrl, extra: e.summary.keys }; },
       },
     });
-    h.session.actor = { id: 'u_9', name: 'Hook Tester' };
-    const actor = { id: 'u_9', name: 'Hook Tester' };
     const link = await create(h, { url: 'https://example.com/a', title: 'before' });
-    expect(seen.create).toEqual({ actor, url: `${API}/links` });
+    expect(seen.create).toEqual({ url: `${API}/links` });
 
     await request(h.app).patch(`${API}/links/${link.id}`).send({ title: 'after' });
-    expect(seen.update).toEqual({ actor, url: `${API}/links/${link.id}`, extra: 'before' });
+    expect(seen.update).toEqual({ url: `${API}/links/${link.id}`, extra: 'before' });
 
     await request(h.app).post(`${API}/links/${link.id}/archive`);
-    expect(seen.archive).toEqual({ actor, url: `${API}/links/${link.id}/archive`, extra: true });
+    expect(seen.archive).toEqual({ url: `${API}/links/${link.id}/archive`, extra: true });
 
     await request(h.app).delete(`${API}/links/${link.id}`);
-    expect(seen.delete).toEqual({ actor, url: `${API}/links/${link.id}`, extra: 1 });
+    expect(seen.delete).toEqual({ url: `${API}/links/${link.id}`, extra: 1 });
   });
 });
 

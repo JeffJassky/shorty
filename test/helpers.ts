@@ -5,7 +5,7 @@ import type { AddressInfo } from 'node:net';
 import mongoose from 'mongoose';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import { createShorty } from '../src/server/index.js';
-import type { Actor, CreateShortyConfig, ShortyInstance } from '../types/index.js';
+import type { CreateShortyConfig, ShortyInstance } from '../types/index.js';
 
 /**
  * Shared harness. Real Express, real Mongo, real HTTP — no mocks
@@ -78,15 +78,11 @@ export interface Harness {
   app: Express;
   shorty: ShortyInstance;
   clock: Clock;
-  /** Mutate to change who `resolveUser` sees. */
-  session: { actor: Actor | null };
   /** The config actually passed to createShorty. */
   config: CreateShortyConfig;
   /** Same prefixes, for building a second instance over the same collections. */
   prefixes: { modelPrefix: string; collectionPrefix: string };
 }
-
-type AuthedRequest = Request & { testActor?: Actor | null };
 
 const FILE_ID = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
 const live: ShortyInstance[] = [];
@@ -105,7 +101,6 @@ async function resetFileCollections(collectionPrefix: string): Promise<void> {
 export async function harness(opts: HarnessOptions = {}): Promise<Harness> {
   const mount = opts.mount ?? '/go';
   const clock = makeClock();
-  const session: { actor: Actor | null } = { actor: { id: 'u_1', name: 'Ann Admin' } };
   const prefixes = { modelPrefix: `T${FILE_ID}`, collectionPrefix: `t${FILE_ID}_` };
   await resetFileCollections(opts.config?.collectionPrefix ?? prefixes.collectionPrefix);
 
@@ -115,7 +110,6 @@ export async function harness(opts: HarnessOptions = {}): Promise<Harness> {
     pepper: 'test-pepper',
     ...prefixes,
     now: () => clock.now,
-    resolveUser: (req) => (req as AuthedRequest).testActor ?? null,
     ...opts.config,
   };
 
@@ -126,10 +120,6 @@ export async function harness(opts: HarnessOptions = {}): Promise<Harness> {
   const app = express();
   app.set('trust proxy', true);
   app.use(express.json());
-  app.use((req, _res, next) => {
-    (req as AuthedRequest).testActor = session.actor;
-    next();
-  });
 
   const hostRoute = () => {
     app.get('/host-page', (_req, res) => { res.status(200).type('text').send('host'); });
@@ -144,7 +134,7 @@ export async function harness(opts: HarnessOptions = {}): Promise<Harness> {
   // What the host's own 404 looks like — distinguishable from shorty's.
   app.use((_req, res) => { res.status(404).type('text').send('host 404'); });
 
-  return { app, shorty, clock, session, config, prefixes };
+  return { app, shorty, clock, config, prefixes };
 }
 
 /**

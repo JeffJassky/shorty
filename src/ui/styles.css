@@ -842,11 +842,6 @@ fieldset.field > legend { padding: 0; margin-bottom: 6px; }
 .chain code { overflow-wrap: anywhere; }
 .warn-row { display: flex; align-items: center; gap: 10px; padding: 10px 12px; font-size: 13px; }
 .warn-ico { color: var(--amber); }
-.browser-frame { border: 1px solid var(--border-strong); border-radius: var(--r-md); overflow: hidden; background: var(--bg-elev); }
-.browser-bar { display: flex; gap: 5px; align-items: center; padding: 6px 10px; background: var(--bg-sunken); border-bottom: 1px solid var(--border); }
-.browser-bar span { width: 8px; height: 8px; border-radius: 50%; background: var(--fg-faint); }
-.browser-bar code { margin-left: 8px; font-size: 11px; color: var(--fg-muted); }
-.browser-frame img { display: block; width: 100%; height: auto; }
 .qr-panel { display: flex; flex-direction: column; align-items: center; gap: 10px; }
 .qr-canvas { width: 240px; height: 240px; border-radius: var(--r-md); border: 1px solid var(--border); background: #fff; }
 .qr-url { font-size: 11.5px; color: var(--fg-muted); overflow-wrap: anywhere; text-align: center; }

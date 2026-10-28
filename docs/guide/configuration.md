@@ -18,8 +18,8 @@ first request. The authoritative declarations, with full doc comments, are in
 | `listLimit` | `200` | Max rows per list page. |
 | `now` | `() => new Date()` | Clock, for tests and replays. |
 | `logger` | none | `{ debug, info, warn, error }`, each optional. |
-| `resolveUser` | `defaultResolveUser` | `(req) => { id, name? } \| null`; stamps `createdBy` / `updatedBy`. The default reads the id from `req.authUserId`, `req.user._id` or `req.user.id`, and the name from `req.user.name`, `displayName` or `email`. |
-| `screenshot` | none | [Screenshot adapter](./inspect). The UI hides the Screenshot tab without it. |
+
+
 | `ui` | `{}` | Defaults merged into every `ui()` call. |
 | hooks | none | `onClick`, `onCreate`, `onUpdate`, `onArchive`, `onDelete`, `onMiss`, `track`. See [Hooks & telemetry](./hooks). |
 
@@ -78,7 +78,7 @@ Pass `false` to disable recording, or an object:
 
 | Key | Default | Notes |
 |---|---|---|
-| `timeoutMs` | `5000` | Whole-inspect budget: DNS, every hop, the screenshot adapter. |
+| `timeoutMs` | `5000` | Whole-inspect budget: DNS and every hop. |
 | `maxBytes` | `2_000_000` | Body read cap. Reading also stops at `</head>`. |
 | `maxRedirects` | `5` | Hops followed. |
 | `lookup` | `dns.promises.lookup` | `(host) => Promise<string[]>`. Every address is checked. |
